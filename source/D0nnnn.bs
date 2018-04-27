@@ -1,0 +1,339 @@
+<pre class='metadata'>
+Title: std::async() in an Executors World
+Shortname: D0nnnn
+Revision: 0
+Audience: LEWG
+Status: P
+Group: WG21
+Editor: Thomas Rodgers, RedHat, trodgers@redhat.com
+Editor: H Carter Edwards, Nvidia, hedwards@nvidia.com
+URL: 
+Abstract: We show an evolutionary path for code written to std::async() to leverage Executors
+Markup Shorthands: markdown yes
+</pre>
+
+Background {#bg}
+==========
+
+C++11 introduced async() along with several other basic concurrency primitives. Many regard
+async() as fundamentally broken [[n3637]] and in need of deprecation [[n3777]]. Following much discussion
+and a passionate plea [[n3780]], the effort to deprecate async() prior an executors based replacement
+was abandoned. The guidance from SG1 to the authors of the various Executors proposals, since at least the
+2014 Urbana-Champagne SG1 discussion of [[n4242]] (see: [[SG1-Mins-n4242]]), has been that any Executors
+proposal must provide a clear answer for how to address the deficiencies of async().
+
+At the Fall 2017 Albuquerque meeting, a companion paper [[p0737]] to the Executors proposal was presented
+that more fully defines the notion of an execution_context. This paper includes a propsoal to formally
+define the notion of an "Async Executor" type and supporting library machinery to provide an
+evolutionary path away from the undesirable, but presumably in widespread use at this point, semantics
+of the current async().
+
+At the Winter 2018 Jacksonville meeting, there was clear direction to the authors of the Executors
+proposal [[p0443]] to provide library usage examples (see: [[LEWG-Mins-p0443]]). This paper intends to address this request by
+drawing on [[p0737]] as it specifically relates to async().
+
+The current wording on the behavior of ```std::async``` is as follows -
+<blockquote>
+
+— If launch::async is set in policy, calls INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_-
+COPY(std::forward<Args>(args))...) (23.14.3, 33.3.2.2) as if in a new thread of execution
+represented by a thread object with the calls to DECAY_COPY being evaluated in the thread
+that called async. Any return value is stored as the result in the shared state. Any excep-
+tion propagated from the execution of INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_-
+COPY(std::forward<Args>(args))...) is stored as the exceptional result in the shared state.
+The thread object is stored in the shared state and affects the behavior of any asynchronous
+return objects that reference that state.
+
+— If launch::deferred is set in policy, stores DECAY_COPY(std::forward<F>(f)) and DECAY_-
+COPY(std::forward<Args>(args))... in the shared state. These copies of f and args consti-
+tute a deferred function. Invocation of the deferred function evaluates INVOKE(std::move(g),
+std::move(xyz)) where g is the stored value of DECAY_COPY(std::forward<F>(f)) and xyz is
+the stored copy of DECAY_COPY(std::forward<Args>(args)).... Any return value is stored as
+the result in the shared state. Any exception propagated from the execution of the deferred
+function is stored as the exceptional result in the shared state. The shared state is not made
+ready until the function has completed. The first call to a non-timed waiting function (33.6.5)
+on an asynchronous return object referring to this shared state shall invoke the deferred func-
+tion in the thread that called the waiting function. Once evaluation of INVOKE(std::move(g),
+std::move(xyz)) begins, the function is no longer considered deferred. [ Note: If this policy is
+specified together with other policies, such as when using a policy value of launch::async |
+launch::deferred, implementations should defer invocation or the selection of the policy when
+no more concurrency can be effectively exploited. — end note ]
+
+— If no value is set in the launch policy, or a value is set that is neither specified in this document
+nor by the implementation, the behavior is undefined.
+</blockquote>
+
+The language run-time currently provides a *hidden* executor types which fulfills the requirements of
+these launch policies. In particular, a launch policy of ```launch::async``` requires that the run-time
+provide a new single thread executor to evaluate the supplied Callable. The policy for ```launch::deferred```
+most resembles the concept of an *inline executor*, which only evaluates the supplied Callable when the
+returned ```std::future``` is awaited.
+
+[[p0737]] seeks to formally introduce the concept of an *execution context* which is currently left
+unspecified in [[p0443]]. The ExecutionContext is defined by [[p0737]] as follows -
+
+<blockquote>
+A concurrency and parallelism **execution context** manages a set of 
+execution agents on a set of **execution resources** of a given
+**execution architecture**.
+
+These execution agents execute work, implemented by a callable,
+that is submitted to the execution context by an **executor**.
+
+One or more types of executors may submit work to the same
+execution context.
+Work submitted to an execution context is **incomplete** until
+(1) it is invoked and exits execution by return or exception or 
+(2) its submission for execution is canceled.
+
+    Note: The *execution context* terminology used here
+    and in the Networking TS (N4656) deviate from the 
+    traditional *context of execution* usage that refers
+    to the state of a single executing callable; *e.g.*,
+    program counter, registers, stack frame.
+</blockquote>
+
+This ExecutionContext concept is specified as follows -
+
+<xmp>
+class ExecutionContext /* exposition only */ {
+public:
+
+  template <typename ExecutionContextProperty>
+    /* exposition only */ detail::query_t< ExecutionContext , ExecutionContextProperty >
+  query(ExecutionContextProperty p) const ;
+
+  ~ExecutionContext();
+
+  // Not copyable or moveable
+  ExecutionContext( ExecutionContext const & ) = delete ;
+  ExecutionContext( ExecutionContext && ) = delete ;
+  ExecutionContext & operator = ( ExecutionContext const & ) = delete ;
+  ExecutionContext & operator = ( ExecutionContext && ) = delete ;
+
+  // Execution resource
+  using execution_resource_t = /* implementation defined */ ;
+
+  execution_resource_t const & execution_resource() const noexcept ;
+
+  // Executor generator
+  template< class ... ExecutorProperties >
+    /* exposition only */ detail::executor_t< ExecutionContext , ExecutorProperties... >
+  executor( ExecutorProperties... );
+
+  // Waiting functions:
+  void wait();
+  template< class Clock , class Duration >
+  bool wait_until( chrono::time_point<Clock,Duration> const & );
+  template< class Rep , class Period >
+  bool wait_for( chrono::duration<Rep,Period> const & );
+};
+
+bool operator == ( ExecutionContext const & , ExecutionContext const & );
+bool operator != ( ExecutionContext const & , ExecutionContext const & );
+
+// Execution context properties:
+
+constexpr struct reject_on_destruction_t {} reject_on_destruction;
+constexpr struct abandon_on_destruction_t {} abandon_on_destruction;
+constexpr struct abort_on_destruction_t {} abort_on_destruction;
+constexpr struct wait_on_destruction_t {} wait_on_destruction;
+</xmp>
+
+An Execution Context for async() {#ae}
+================================
+
+[[p0737]] Proposes that that **33.6.9 Function template async** have an equivalent execution context
+and executor based mechanism for launching asynchronous work. This exposes the currently hidden execution
+context and executors which the underlying runtime have implemented to enable ```std::async```
+
+<xmp>
+  // Equivalent without- and with-executor async statements without launch policy
+
+  auto f = std::async( []{ std::cout << "anonymous way\n"} );
+  auto f = std::async( std::async_execution_context.executor() , []{ std::cout << "executor way\n"} );
+
+  // Equivalent without- and with-executor async statements with launch policy
+
+  auto f = std::async( std::launch::deferred , []{ std::cout << "anonymous way\n"} );
+  auto f = std::async( std::async_execution_context.executor( std::launch::deferred ) , []{ std::cout << "executor way\n"} );
+</xmp>
+
+Proposed wording for Standard Async Execution Context and Executor {#pw}
+==================================================================
+
+[[p0737]] proposes the following wording:
+
+<xmp>
+  namespace std {
+
+  struct async_execution_context_t {
+    // conforming to ExecutionContext concept
+
+    // Execution resource
+    using execution_resource_t = thread_execution_resource_t ;
+
+    template< class ... ExecutorProperties >
+      /* exposition only */ detail::executor_t< async_execution_context_t , ExecutorProperties... >
+    executor( ExecutorProperties ... p );``
+  };
+
+  class async_executor_t ; // implementation defined
+
+  extern async_execution_context_t async_execution_context ;
+
+  template< class Function , class ... Args >
+  future<std::result_of<std::decay_t<Function>(std::decay_t<Args>...)>>
+  async( async_executor_t exec , Function && f , Args && ... args );
+
+  }
+</xmp>
+
+```extern async_execution_context_t async_execution_context;```
+
+  Global execution context object enabling the
+  equivalent invocation of callables 
+  through the with-executor ```std::async```
+  and without-executor ```std::async```.
+  Guaranteed to be initialized during or before the first use.
+  [Note: It is likely that
+  ```async_execution_context == program_thread_execution_context```.
+  --end note]
+
+<xmp>
+  template< class ... ExecutorProperties >
+  /* exposition only */ detail::executor_t< async_execution_context_t , ExecutorProperties... >
+  async_execution_context_t::executor( ExecutorProperties ... p );
+</xmp>
+
+  Returns:
+  An *executor* with ```*this``` *execution context* and
+  execution properties ```p```.
+  If ``p`` is empty, is ```std::launch::async```, or is ```std::launch::deferred```
+  the *executor* type is ```async_executor_t```.
+
+<xmp>
+template< class Function , class ... Args >
+future<std::result_of<std::decay_t<Function>(std::decay_t<Args>...)>>
+async( async_executor_t exec , Function && f , Args && ... args );
+</xmp>
+
+  Effects:
+  If ```exec``` has a ```std::launch``` *policy*
+  then equivalent to invoking ```std::async(``` *policy* ```, f , args... );```
+  otherwise equivalent to invoking ```std::async( f , args... );```
+  Equivalency is symmetric with respect to the non-executor ```std::async```
+  functions.
+
+Open Questions {#oq}
+==============
+  1. [[p0737]] Does not propose a way to migrate the executor aware ```std::async``` template from a
+     single well known executor type ```std::async_execution_context.exector()``` to executors defined
+     by other areas of the standard, e.g. ```std::experimental::static_thread_pool``` or user defined
+     executor types.
+  2. ```std::launch::async ``` and ```std::launch::deferred``` are currently specified in **33.6.2** as:
+     <xmp>
+      enum class launch : unspecified {
+        async = unspecified ,
+        deferred = unspecified ,
+        implementation-defined
+      };
+     </xmp>
+
+     Further **33.6.2** constrains ```std::launch``` to be a *bitmask* with the following note -
+     [ Note: Implementations can provide bitmasks to specify restrictions on task interaction by functions launched
+       by async() applicable to a corresponding subset of available launch policies. Implementations can extend
+       the behavior of the first overload of async() by adding their extensions to the launch policy under the “as if”
+       rule.
+       -- end note]
+
+     [[p0737]] re-imagines these enums as executor properties, which as defined by [[p0443]] would seem to require -
+     <xmp>
+      namespace std {
+        namespace launch {
+          struct async_t {
+          static constexpr bool is_requirable = true;
+          static constexpr bool is_preferable = true;
+
+          ...
+          };
+
+          struct deferred_t {
+          static constexpr bool is_requirable = true;
+          static constexpr bool is_preferable = true;
+
+          ...
+          };
+
+          constexpr async_t async;
+          constexpr deferred_T deferred;
+        }
+      }
+     </xmp>
+     In order to preserve backward compatibility with existing usage of ```std::launch``` this would imply that the
+     launch-policy-as-executor-property types would also need to behave as-if they were a bitmask. That would also imply
+     that ```std::launch::async || std::launch::deferred``` return another viable property type that represents to union
+     of these two launch properties.
+
+  3. [[n4406]] and [[p0761]] suggest a ```.on()``` member taking an executor to allow parallel algorithm launch policies to
+     compose with executors. Are the policies of ```std::launch``` sufficiently different, conceptually, from the launch policies
+     specified in **23.19.2** to warrant a different mechanism for composition with executors?
+  
+<pre class=biblio>
+{
+    "n3637": {
+        "href": "https://wg21.link/n3637",
+        "title": "async and ~future (Revision 3)",
+        "authors": ["Herb Sutter", "Chandler Carruth", "Niklas Gustafsson"],
+        "date": "April 17, 2013"
+    },
+    "n3777": {
+        "href": "https://wg21.link/n3777",
+        "title": "Wording for deprecating async",
+        "authors": ["Herb Sutter"],
+        "date": "September 23, 2013"
+    },
+    "n3780": {
+        "href": "https://wg21.link/n3780",
+        "title": "Why Deprecating async() is the Worst of all Options",
+        "authors": ["Nicolai Josuttis"],
+        "date": "September 26, 2013"
+    },
+    "n4242": {
+        "href": "https://wg21.link/n4242",
+        "title": "Executors and Asynchronous Operations",
+        "authors": ["Chris Kohlhoff <chris@kohlhoff.com>"],
+        "date": "October 13, 2014"
+    },
+    "SG1-Mins-n4242": {
+        "title": "Minutes of SG1 discussion of [[n4242]]at 2014 Urbana-Champagne WG21 meeting"
+    },
+    "p0737": {
+        "href": "https://wg21.link/p0737",
+        "title": "Execution Context of Execution Agents",
+        "authors": ["H. Carter Edwards", "Daniel Sunderland", "Michael Wong", "Thomas Rodgers", "Gordon Brown"]
+    },
+    "p0443": {
+        "href": "https://wg21.link/p0443",
+        "title": "A Unified Executors Proposal for C++",
+        "authors": ["Jared Hoberock", "Michael Garland", "Chris Kohlhoff", "Chris Mysen", "Carter Edwards", "Gordon Brown"],
+        "date": "February 12, 2018"
+    },
+    "LEWG-Mins-p0443": {
+        "title": "Minutes of LEWG discussion of [[p0443]] at 2018 Jacksonville WG21 meeting"
+    },
+    "n4406": {
+        "href": "https://wg21.link/n4406",
+        "title": "Parallel Algorithms Need Executors",
+        "authors": ["Jared Hoberock", "Michael Garland", "Olivier Girioux"],
+        "date": "April 10, 2015"
+    },
+    "p0761": {
+        "href": "https://wg21.link/p0761",
+        "title": "Executors Design Document",
+        "authors": ["Jared Hoberock", "Michael Garland", "Chris Kohlhoff", "Chris Mysen", "Carter Edwards", "Gordon Brown",
+                    "Michael Wong"],
+        "date": "February 12, 2018"
+    }
+}
+</pre>
