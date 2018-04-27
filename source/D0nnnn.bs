@@ -166,39 +166,29 @@ Proposed wording for Standard Async Execution Context and Executor {#pw}
 
 <xmp>
   namespace std {
+    struct async_execution_context_t {
+      // conforming to ExecutionContext concept
+      // Execution resource
+      using execution_resource_t = thread_execution_resource_t;
+      template<class ... ExecutorProperties>
+        /* exposition only */ detail::executor_t<async_execution_context_t , ExecutorProperties...>
+      executor( ExecutorProperties ... p );
+    };
+    class async_executor_t ; // implementation defined
+    extern async_execution_context_t async_execution_context;
 
-  struct async_execution_context_t {
-    // conforming to ExecutionContext concept
-
-    // Execution resource
-    using execution_resource_t = thread_execution_resource_t ;
-
-    template< class ... ExecutorProperties >
-      /* exposition only */ detail::executor_t< async_execution_context_t , ExecutorProperties... >
-    executor( ExecutorProperties ... p );``
-  };
-
-  class async_executor_t ; // implementation defined
-
-  extern async_execution_context_t async_execution_context ;
-
-  template< class Function , class ... Args >
-  future<std::result_of<std::decay_t<Function>(std::decay_t<Args>...)>>
-  async( async_executor_t exec , Function && f , Args && ... args );
-
+    template<class Function , class ... Args>
+    future<std::result_of<std::decay_t<Function>(std::decay_t<Args>...)>>
+    async(async_executor_t exec , Function && f , Args && ... args);
   }
 </xmp>
 
 ```extern async_execution_context_t async_execution_context;```
 
-  Global execution context object enabling the
-  equivalent invocation of callables 
-  through the with-executor ```std::async```
-  and without-executor ```std::async```.
+  Global execution context object enabling the equivalent invocation of callables 
+  through the with-executor ```std::async``` and without-executor ```std::async```.
   Guaranteed to be initialized during or before the first use.
-  [Note: It is likely that
-  ```async_execution_context == program_thread_execution_context```.
-  --end note]
+  [Note: It is likely that ```async_execution_context == program_thread_execution_context```. --end note]
 
 <xmp>
   template< class ... ExecutorProperties >
@@ -272,7 +262,7 @@ Open Questions {#oq}
      </xmp>
      In order to preserve backward compatibility with existing usage of ```std::launch``` this would imply that the
      launch-policy-as-executor-property types would also need to behave as-if they were a bitmask. That would also imply
-     that ```std::launch::async || std::launch::deferred``` return another viable property type that represents to union
+     that ```std::launch::async || std::launch::deferred``` return another viable property type that represents the union
      of these two launch properties.
 
   3. [[n4406]] and [[p0761]] suggest a ```.on()``` member taking an executor to allow parallel algorithm launch policies to
@@ -306,7 +296,7 @@ Open Questions {#oq}
         "date": "October 13, 2014"
     },
     "SG1-Mins-n4242": {
-        "title": "Minutes of SG1 discussion of [[n4242]]at 2014 Urbana-Champagne WG21 meeting"
+        "title": "Minutes of SG1 discussion of [n4242] at 2014 Urbana-Champaign WG21 meeting"
     },
     "p0737": {
         "href": "https://wg21.link/p0737",
@@ -320,7 +310,7 @@ Open Questions {#oq}
         "date": "February 12, 2018"
     },
     "LEWG-Mins-p0443": {
-        "title": "Minutes of LEWG discussion of [[p0443]] at 2018 Jacksonville WG21 meeting"
+        "title": "Minutes of LEWG discussion of [p0443] at 2018 Jacksonville WG21 meeting"
     },
     "n4406": {
         "href": "https://wg21.link/n4406",
