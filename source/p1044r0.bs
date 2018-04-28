@@ -23,7 +23,7 @@ was abandoned. The guidance from SG1 to the authors of the various Executors pro
 proposal must provide a clear answer for how to address the deficiencies of async().
 
 At the Fall 2017 Albuquerque meeting, a companion paper [[p0737]] to the Executors proposal was presented
-that more fully defines the notion of an execution_context. This paper includes a propsoal to formally
+that more fully defines the notion of an execution_context. This paper includes a proposal to formally
 define the notion of an "Async Executor" type and supporting library machinery to provide an
 evolutionary path away from the undesirable, but presumably in widespread use at this point, semantics
 of the current async().
