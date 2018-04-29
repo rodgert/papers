@@ -23,37 +23,32 @@ was abandoned. The guidance from SG1 to the authors of the various Executors pro
 proposal must provide a clear answer for how to address the deficiencies of async().
 
 At the Fall 2017 Albuquerque meeting, a companion paper [[p0737]] to the Executors proposal was presented
-that more fully defines the notion of an execution_context. This paper includes a propsoal to formally
-define the notion of an "Async Executor" type and supporting library machinery to provide an
+that more fully defines the notion of an execution_context. This paper includes a proposal to formally
+define the notion of an "executor for async()" and supporting library machinery to provide an
 evolutionary path away from the undesirable, but presumably in widespread use at this point, semantics
 of the current async().
 
 At the Winter 2018 Jacksonville meeting, there was clear direction to the authors of the Executors
-proposal [[p0443]] to provide library usage examples (see: [[LEWG-Mins-p0443]]). This paper intends to address this request by
-drawing on [[p0737]] as it specifically relates to async().
+proposal [[p0443]] to provide library usage examples (see: [[LEWG-Mins-p0443]]). 
+This paper intends to address this request by drawing on [[p0737]] as it specifically relates to async().
 
 The current wording on the behavior of ```std::async``` is as follows -
 <blockquote>
 
-— If launch::async is set in policy, calls INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_-
-COPY(std::forward<Args>(args))...) (23.14.3, 33.3.2.2) as if in a new thread of execution
+— If launch::async is set in policy, calls INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_COPY(std::forward<Args>(args))...) (23.14.3, 33.3.2.2) as if in a new thread of execution
 represented by a thread object with the calls to DECAY_COPY being evaluated in the thread
 that called async. Any return value is stored as the result in the shared state. Any excep-
-tion propagated from the execution of INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_-
-COPY(std::forward<Args>(args))...) is stored as the exceptional result in the shared state.
+tion propagated from the execution of INVOKE(DECAY_COPY(std::forward<F>(f)), DECAY_COPY(std::forward<Args>(args))...) is stored as the exceptional result in the shared state.
 The thread object is stored in the shared state and affects the behavior of any asynchronous
 return objects that reference that state.
 
-— If launch::deferred is set in policy, stores DECAY_COPY(std::forward<F>(f)) and DECAY_-
-COPY(std::forward<Args>(args))... in the shared state. These copies of f and args consti-
-tute a deferred function. Invocation of the deferred function evaluates INVOKE(std::move(g),
+— If launch::deferred is set in policy, stores DECAY_COPY(std::forward<F>(f)) and DECAY_COPY(std::forward<Args>(args))... in the shared state. These copies of f and args constitute a deferred function. Invocation of the deferred function evaluates INVOKE(std::move(g),
 std::move(xyz)) where g is the stored value of DECAY_COPY(std::forward<F>(f)) and xyz is
 the stored copy of DECAY_COPY(std::forward<Args>(args)).... Any return value is stored as
 the result in the shared state. Any exception propagated from the execution of the deferred
 function is stored as the exceptional result in the shared state. The shared state is not made
 ready until the function has completed. The first call to a non-timed waiting function (33.6.5)
-on an asynchronous return object referring to this shared state shall invoke the deferred func-
-tion in the thread that called the waiting function. Once evaluation of INVOKE(std::move(g),
+on an asynchronous return object referring to this shared state shall invoke the deferred function in the thread that called the waiting function. Once evaluation of INVOKE(std::move(g),
 std::move(xyz)) begins, the function is no longer considered deferred. [ Note: If this policy is
 specified together with other policies, such as when using a policy value of launch::async |
 launch::deferred, implementations should defer invocation or the selection of the policy when
@@ -63,7 +58,7 @@ no more concurrency can be effectively exploited. — end note ]
 nor by the implementation, the behavior is undefined.
 </blockquote>
 
-The language run-time currently provides a *hidden* executor types which fulfills the requirements of
+The language run-time currently provides *hidden* executor types which fulfills the requirements of
 these launch policies. In particular, a launch policy of ```launch::async``` requires that the run-time
 provide a new single thread executor to evaluate the supplied Callable. The policy for ```launch::deferred```
 most resembles the concept of an *inline executor*, which only evaluates the supplied Callable when the
@@ -74,7 +69,7 @@ unspecified in [[p0443]]. The ExecutionContext is defined by [[p0737]] as follow
 
 <blockquote>
 A concurrency and parallelism **execution context** manages a set of 
-execution agents on a set of **execution resources** of a given
+**execution agents** on a set of **execution resources** of a given
 **execution architecture**.
 
 These execution agents execute work, implemented by a callable,
@@ -87,7 +82,7 @@ Work submitted to an execution context is **incomplete** until
 (2) its submission for execution is canceled.
 
     Note: The *execution context* terminology used here
-    and in the Networking TS (N4656) deviate from the 
+    and in the Networking TS [[n4656]] deviate from the 
     traditional *context of execution* usage that refers
     to the state of a single executing callable; *e.g.*,
     program counter, registers, stack frame.
@@ -143,9 +138,11 @@ constexpr struct wait_on_destruction_t {} wait_on_destruction;
 An Execution Context for async() {#ae}
 ================================
 
-[[p0737]] Proposes that that **33.6.9 Function template async** have an equivalent execution context
-and executor based mechanism for launching asynchronous work. This exposes the currently hidden execution
-context and executors which the underlying runtime have implemented to enable ```std::async```
+[[p0737]] Proposes that there exists in the underlying runtime a *hidden* execution context into which
+**33.6.9 Function template async** launches asynchronous work, and proposes that this
+execution context be exposed along with the *hidden* executors fulfilling ```std::async``` launch policies.
+Exposing this execution context and these executor types enables current
+use of ```std::async``` to be transliterated to the executor model as follows.
 
 <xmp>
   // Equivalent without- and with-executor async statements without launch policy
@@ -159,48 +156,108 @@ context and executors which the underlying runtime have implemented to enable ``
   auto f = std::async( std::async_execution_context.executor( std::launch::deferred ) , []{ std::cout << "executor way\n"} );
 </xmp>
 
+Asynchronous execution behavior is unchanged following such a well-defined transliteration.
+The use of ```std::async``` is now prepared, at the developers' discretion, to replace the leading executor
+argument with a different executor.
+
+
+
 Proposed wording for Standard Async Execution Context and Executor {#pw}
 ==================================================================
 
-[[p0737]] proposes the following wording:
+The proposed wording is extracted from [[p0737]] with modifications
+for a minimal proposal and to align with executors proposal [[p0443]].
 
 <xmp>
   namespace std {
-    struct async_execution_context_t {
-      // conforming to ExecutionContext concept
-      // Execution resource
-      using execution_resource_t = thread_execution_resource_t;
-      template<class ... ExecutorProperties>
-        /* exposition only */ detail::executor_t<async_execution_context_t , ExecutorProperties...>
-      executor( ExecutorProperties ... p );
-    };
+  namespace experimental {
+  inline namespace executors_v1 {
+  namespace execution {
+
+    namespace launch {
+      struct async_t {
+        static constexpr bool is_requirable = true;
+        static constexpr bool is_preferable = true;
+      };
+
+      struct deferred_t {
+        static constexpr bool is_requirable = true;
+        static constexpr bool is_preferable = true;
+      };
+
+      constexpr async_t async; // executor property
+      constexpr deferred_t deferred; // executor property
+    } // namespace launch
+
     class async_executor_t ; // implementation defined
+
+    class async_execution_context_t {
+    public:
+
+      // Not copyable or moveable
+      async_execution_context_t( async_execution_context_t const & ) = delete ;
+      async_execution_context_t( async_execution_context_t && ) = delete ;
+      async_execution_context_t & operator = ( async_execution_context_t const & ) = delete ;
+      async_execution_context_t & operator = ( async_execution_context_t && ) = delete ;
+
+      // Executor generator
+      template<class ... ExecutorProperties>
+        /* exposition only */ detail::executor_t< ExecutionContext , ExecutorProperties... >
+      executor( ExecutorProperties ... p );
+
+      // Execution resource - deferred
+      // Waiting - deferred
+    };
+
+    // Execution context into which std::async launches work
     extern async_execution_context_t async_execution_context;
 
+  } // namespace execution
+  } // inline namespace executors_v1
+  } // namespace experimental
+  } // namespace std
+
+  namespace std {
     template<class Function , class ... Args>
     future<std::result_of<std::decay_t<Function>(std::decay_t<Args>...)>>
-    async(async_executor_t exec , Function && f , Args && ... args);
-  }
+    async( std::experimental::execution::async_executor_t exec , Function && f , Args && ... args);
+  } // namespace std
 </xmp>
 
-```extern async_execution_context_t async_execution_context;```
+<xmp>
+experimental::execute::launch::async;
+experimental::execute::launch::deferred;
+</xmp>
 
-  Global execution context object enabling the equivalent invocation of callables 
-  through the with-executor ```std::async``` and without-executor ```std::async```.
-  Guaranteed to be initialized during or before the first use.
-  [Note: It is likely that ```async_execution_context == program_thread_execution_context```. --end note]
+  Executor properties isomorphic with ```std::launch``` launch policies of the same name.
+
+```class async_executor_t;```
+
+  An implementation defined type satisfying ```TwoWayExecutor``` requirements [[p0443]].
+
+```class async_execution_context_t;```
+
+  An implementation defined type partially satisfying execution context requirements [[p0737]].
+  Specification of execution context properties, construction, destruction, and wait functionality 
+  is deferred.
 
 <xmp>
   template< class ... ExecutorProperties >
-  /* exposition only */ detail::executor_t< async_execution_context_t , ExecutorProperties... >
+    /* exposition only */ detail::executor_t< ExecutionContext , ExecutorProperties... >
   async_execution_context_t::executor( ExecutorProperties ... p );
 </xmp>
 
   Returns:
-  An *executor* with ```*this``` *execution context* and
-  execution properties ```p```.
-  If ``p`` is empty, is ```std::launch::async```, or is ```std::launch::deferred```
+  A *executor* with ```*this``` *execution context* and execution properties ```p```.
+  If ``p`` is empty, is ```std::experimental::execution::launch::async```, or is 
+  ```std::experimental::execution::launch::deferred```
   the *executor* type is ```async_executor_t```.
+
+```extern async_execution_context_t async_execution_context;```
+
+  Global execution context object enabling the equivalent invocation of callables 
+  through the with-async_executor_t ```std::async``` and without-executor ```std::async```.
+  Guaranteed to be initialized during or before the first use.
 
 <xmp>
 template< class Function , class ... Args >
@@ -209,18 +266,35 @@ async( async_executor_t exec , Function && f , Args && ... args );
 </xmp>
 
   Effects:
-  If ```exec``` has a ```std::launch``` *policy*
+  If ```exec``` has an ```std::experimental::execution::launch``` property
   then equivalent to invoking ```std::async(``` *policy* ```, f , args... );```
+  with *policy* of the same name;
   otherwise equivalent to invoking ```std::async( f , args... );```
-  Equivalency is symmetric with respect to the non-executor ```std::async```
+  Equivalency is symmetric with respect to the current, non-executor ```std::async```
   functions.
+
+Transliteration of async() {#ta}
+==========================
+
+With this proposal, transliteration of current ```std::async``` usage to the executor model is as follows.
+
+<xmp>
+  // Equivalent without- and with-executor async statements without launch policy
+
+  auto f = std::async( []{ std::cout << "anonymous way\n"} );
+  auto f = std::async( std::experimental::execution::async_execution_context.executor() , []{ std::cout << "executor way\n"} );
+
+  // Equivalent without- and with-executor async statements with launch policy
+
+  auto f = std::async( std::launch::deferred , []{ std::cout << "anonymous way\n"} );
+  auto f = std::async( std::experimental::execution::async_execution_context.executor( std::experimental::execution::launch::deferred ) , []{ std::cout << "executor way\n"} );
+</xmp>
+
 
 Open Questions {#oq}
 ==============
-  1. [[p0737]] Does not propose a way to migrate the executor aware ```std::async``` template from a
-     single well known executor type ```std::async_execution_context.exector()``` to executors defined
-     by other areas of the standard, e.g. ```std::experimental::static_thread_pool``` or user defined
-     executor types.
+  1. [[p0737]] Does not propose a mechanism to migrate the executor aware ```std::async``` template from 
+     ```std::experimental::execute::async_executor_t``` to other executors types.
   2. ```std::launch::async ``` and ```std::launch::deferred``` are currently specified in **33.6.2** as:
      <xmp>
       enum class launch : unspecified {
@@ -237,33 +311,12 @@ Open Questions {#oq}
        rule.
        -- end note]
 
-     [[p0737]] re-imagines these enums as executor properties, which as defined by [[p0443]] would seem to require -
-     <xmp>
-      namespace std {
-        namespace launch {
-          struct async_t {
-          static constexpr bool is_requirable = true;
-          static constexpr bool is_preferable = true;
-
-          ...
-          };
-
-          struct deferred_t {
-          static constexpr bool is_requirable = true;
-          static constexpr bool is_preferable = true;
-
-          ...
-          };
-
-          constexpr async_t async;
-          constexpr deferred_T deferred;
-        }
-      }
-     </xmp>
      In order to preserve backward compatibility with existing usage of ```std::launch``` this would imply that the
-     launch-policy-as-executor-property types would also need to behave as-if they were a bitmask. That would also imply
-     that ```std::launch::async || std::launch::deferred``` return another viable property type that represents the union
-     of these two launch properties.
+     ```std::experimental::execute::launch``` property types would also need to behave as-if they were a bitmask. 
+     This implies that ```std::experimental::execution::launch::async | std::experimental::execution::launch::deferred``` 
+     return another viable property type that represents the union of these two launch properties.
+     Another option is for [[p0443]] to be revised to allow executor properties to be implemented as 
+     ```enum class``` or ```constexpr``` values potentially of the same type.
 
   3. [[n4406]] and [[p0761]] suggest a ```.on()``` member taking an executor to allow parallel algorithm launch policies to
      compose with executors. Are the policies of ```std::launch``` sufficiently different, conceptually, from the launch policies
@@ -324,6 +377,11 @@ Open Questions {#oq}
         "authors": ["Jared Hoberock", "Michael Garland", "Chris Kohlhoff", "Chris Mysen", "Carter Edwards", "Gordon Brown",
                     "Michael Wong"],
         "date": "February 12, 2018"
+    },
+    "n4656": {
+        "href": "https://wg21.link/n4656",
+        "title": "Working Draft, C++ Extensions for Networking",
+        "date": "2017-03-17"
     }
 }
 </pre>
