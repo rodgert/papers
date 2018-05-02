@@ -1,0 +1,20 @@
+<pre class='metadata'>
+Title: Adapting Asio to use expected<T,E>
+Shortname: p1044
+Revision: 0
+Audience: LEWG
+Status: P
+Group: WG21
+Editor: Thomas Rodgers, RedHat, trodgers@redhat.com
+URL:
+Abstract: An experience report on adapting an existing API to use expected<T,E>
+Markup Shorthands: markdown yes
+</pre>
+
+Background {#bg}
+==========
+
+This paper explores adapting the API of the Asio networking library to use the proposed expected<T,E> facility.
+Asio's API, like that of the <filesystem> and the proposed Networking TS, uses pairs of functions for each operation,
+one which is expected to report disappointment's via exceptions, and one which will return underlying API disappointments
+via error_code (but may also throw, e.g. bad_alloc).
