@@ -17,15 +17,15 @@ Background {#bg}
 
 C++11 introduced async() along with several other basic concurrency primitives. Many regard
 async() as fundamentally broken [[n3637]] and in need of deprecation [[n3777]]. Following much discussion
-and a passionate plea [[n3780]], the effort to deprecate async() prior an executors based replacement
+and a passionate plea [[n3780]], the effort to deprecate async() prior to an executors-based replacement
 was abandoned. The guidance from SG1 to the authors of the various Executors proposals, since at least the
-2014 Urbana-Champagne SG1 discussion of [[n4242]] (see: [[SG1-Mins-n4242]]), has been that any Executors
-proposal must provide a clear answer for how to address the deficiencies of async().
+2014 Urbana-Champaign SG1 discussion of [[n4242]] (see: [[SG1-Mins-n4242]]), has been that any Executors
+proposal must clearly address the deficiencies of async().
 
 At the Fall 2017 Albuquerque meeting, a companion paper [[p0737]] to the Executors proposal was presented
-that more fully defines the notion of an execution_context. This paper includes a proposal to formally
-define the notion of an "executor for async()" and supporting library machinery to provide an
-evolutionary path away from the undesirable, but presumably in widespread use at this point, semantics
+that more fully defines the notion of an execution_context. The paper includes a proposal for a formal
+definition of an "executor for async()" and its supporting library machinery. This offers an
+evolutionary path away from the undesirable, but possibly widely used at this point, semantics
 of the current async().
 
 At the Winter 2018 Jacksonville meeting, there was clear direction to the authors of the Executors
@@ -64,8 +64,9 @@ provide a new single thread executor to evaluate the supplied Callable. The poli
 most resembles the concept of an *inline executor*, which only evaluates the supplied Callable when the
 returned ```std::future``` is awaited.
 
-[[p0737]] seeks to formally introduce the concept of an *execution context* which is currently left
-unspecified in [[p0443]]. The ExecutionContext is defined by [[p0737]] as follows -
+[[p0737]] seeks the formal introduction of an *execution context* concept, 
+which [[p0443]] currently leaves unspecified.
+[[p0737]] defines the ExecutionContext as follows -
 
 <blockquote>
 A concurrency and parallelism **execution context** manages a set of 
@@ -231,11 +232,11 @@ experimental::execute::launch::deferred;
 
 ```class async_executor_t;```
 
-  An implementation defined type satisfying ```TwoWayExecutor``` requirements [[p0443]].
+  An implementation-defined type satisfying ```TwoWayExecutor``` requirements [[p0443]].
 
 ```class async_execution_context_t;```
 
-  An implementation defined type partially satisfying execution context requirements [[p0737]].
+  An implementation-defined type partially satisfying execution context requirements [[p0737]].
   Specification of execution context properties, construction, destruction, and wait functionality 
   is deferred.
 
@@ -291,9 +292,9 @@ With this proposal, transliteration of current ```std::async``` usage to the exe
 
 Open Questions {#oq}
 ==============
-  1. [[p0737]] Does not propose a mechanism to migrate the executor aware ```std::async``` template from 
+  1. [[p0737]] does not propose a mechanism to migrate the executor aware ```std::async``` template from 
      ```std::experimental::execute::async_executor_t``` to other executors types.
-  2. ```std::launch::async ``` and ```std::launch::deferred``` are currently specified in **33.6.2** as:
+  2. **33.6.2** currently specifies ```std::launch::async ``` and ```std::launch::deferred``` as:
      <xmp>
       enum class launch : unspecified {
         async = unspecified ,
@@ -302,7 +303,7 @@ Open Questions {#oq}
       };
      </xmp>
 
-     Further **33.6.2** constrains ```std::launch``` to be a *bitmask* with the following note -
+     **33.6.2** further constrains ```std::launch``` to be a *bitmask* with the following note -
      [ Note: Implementations can provide bitmasks to specify restrictions on task interaction by functions launched
        by async() applicable to a corresponding subset of available launch policies. Implementations can extend
        the behavior of the first overload of async() by adding their extensions to the launch policy under the “as if”
@@ -317,7 +318,7 @@ Open Questions {#oq}
      ```enum class``` or ```constexpr``` values potentially of the same type.
 
   3. [[n4406]] and [[p0761]] suggest a ```.on()``` member taking an executor to allow parallel algorithm launch policies to
-     compose with executors. Are the policies of ```std::launch``` sufficiently different, conceptually, from the launch policies
+     compose with executors. Do the policies of ```std::launch``` differ enough, conceptually, from the launch policies
      specified in **23.19.2** to warrant a different mechanism for composition with executors?
   
 <pre class=biblio>
