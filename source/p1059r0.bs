@@ -18,3 +18,249 @@ This paper explores adapting the API of the Asio networking library to use the p
 Asio's API, like that of the <filesystem> and the proposed Networking TS, uses pairs of functions for each operation,
 one which is expected to report disappointment's via exceptions, and one which will return underlying API disappointments
 via error_code (but may also throw, e.g. bad_alloc).
+
+Two signatures for most operations {#ts}
+==================================
+Asio, like <filesystem> and the proposed Networking TS declare variants of most entry points which either report all
+errors as exceptions, or some, typically low level system API results, as an error_code passed to the call by reference.
+For example -
+
+<xmp>
+  // This form throws on error
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  std::size_t read(SyncReadStream& s, const MutableBufferSequence& buffers,
+      typename enable_if<
+        is_mutable_buffer_sequence<MutableBufferSequence>::value
+      >::type* = 0);
+
+  // This form returns error, if any in ec
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  std::size_t read(SyncReadStream& s, const MutableBufferSequence& buffers,
+      asio::error_code& ec);
+</xmp>
+
+Note, the second form is not marked noexcept, and thereform may also report errors by throwing, e.g.
+```std::bad_alloc```. 
+
+It appears obvious that the second form should be the one adapted for use with ```expected<T,E>```. One
+possibility is -
+
+<xmp>
+  using expected_result = std::expected<std::size_t, asio::error_code>;
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers);
+</xmp>
+`
+Another possibility is to promote ```error_code ``` to ```error_status``` as well as making the signature
+of the function ```noexcept```.
+<xmp>
+  using expected_result = std::expected<std::size_t, std::exception>;
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers) noexcept;
+</xmp>
+
+Both of these approaches suffer from a common problem, namely the call signature is a match for the original
+throwing version of read. One possible approach is to use tag dispatching to resolve the ambiguity -
+
+<xmp>
+  using expected_result = std::expected<std::size_t, asio::error_code>;
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers,
+                       std::nothrow_t);
+</xmp>
+
+This approach suffers from the problem that the tag is misleading, because this function can in fact throw.
+This argues perhaps then for promoting ```error_code``` to an exception.
+
+<xmp>
+  using expected_result = std::expected<std::size_t, std::exception>;
+  template <typename SyncReadStream, typename MutableBufferSequence>
+  expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers
+                       std::nothrow_t) noexcept;
+</xmp>
+
+Asynchronous Completion Handlers {#ach}
+================================
+As is the case with the Networking TS, Asio defines asynchronous versions of many operations. A typical 
+completion handler conforms to the following concept -
+
+<xmp>
+ void handler(const asio::error_code& error, std::size_t bytes_transferred);
+</xmp>
+
+Which is then supplied to an async request function -
+
+<xmp>
+  template <typename AsyncReadStream, typename MutableBufferSequence,
+            typename ReadHandler>
+  void async_read(AsyncReadStream& s, const MutableBufferSequence& buffers,
+                  ReadHandler&& handler);
+</xmp>
+
+It is simple enough to introduce compile time dispatching to allow ```async_read``` 
+to dispatch to a completion handler taking an expected -
+
+<xmp>
+  using handler_result = std::expected<std::size_t, asio::error_code>;
+  void handler(handler_result r);
+</xmp>
+
+The impact to the user here is fairly minimal in the simple case, however it allows the possibility 
+that the user could supply a handler of the form - 
+
+<xmp>
+  class my_handler {
+     void operator()(const asio::error_code& error, std::size_t bytes_transferred) { ... }
+     void operator()(std::expected<std::size_t, asio::error_code> r) { ... }
+  };
+</xmp>
+
+Should priority be given to one signature vs the other?
+
+Adapting User Code {#auc}
+==================
+
+Asio includes the following example of a simple blocking client -
+
+<xmp>
+  int main(int argc, char* argv[])
+  {
+    try
+    {
+      if (argc != 3)
+      {
+        std::cerr << "Usage: blocking_udp_echo_client <host> <port>\n";
+        return 1;
+      }
+
+      asio::io_context io_context;
+
+      udp::socket s(io_context, udp::endpoint(udp::v4(), 0));
+
+      udp::resolver resolver(io_context);
+      udp::resolver::results_type endpoints =
+        resolver.resolve(udp::v4(), argv[1], argv[2]);
+
+      std::cout << "Enter message: ";
+      char request[max_length];
+      std::cin.getline(request, max_length);
+      size_t request_length = std::strlen(request);
+      s.send_to(asio::buffer(request, request_length), *endpoints.begin());
+
+      char reply[max_length];
+      udp::endpoint sender_endpoint;
+      size_t reply_length = s.receive_from(
+          asio::buffer(reply, max_length), sender_endpoint);
+      std::cout << "Reply is: ";
+      std::cout.write(reply, reply_length);
+      std::cout << "\n";
+    }
+    catch (std::exception& e)
+    {
+      std::cerr << "Exception: " << e.what() << "\n";
+    }
+
+    return 0;
+  }
+</xmp>
+
+This client relies on the throwing versions of the Asio API functions. A version that relied instead
+on handling ```error_code``` might read -
+
+<xmp>
+  int main(int argc, char* argv[])
+  {
+    if (argc != 3)
+    {
+      std::cerr << "Usage: blocking_udp_echo_client <host> <port>\n";
+      return 1;
+    }
+
+    asio::io_context io_context;
+
+    udp::socket s(io_context, udp::endpoint(udp::v4(), 0));
+
+// TODO confirm error_code-ify this
+    error_code ec;
+    udp::resolver resolver(io_context);
+    udp::resolver::results_type endpoints =
+      resolver.resolve(udp::v4(), argv[1], argv[2], ec);
+
+    if (ec)
+      return report(ec);
+      
+    std::cout << "Enter message: ";
+    char request[max_length];
+    std::cin.getline(request, max_length);
+    size_t request_length = std::strlen(request);
+    
+    s.send_to(asio::buffer(request, request_length), *endpoints.begin(), ec);
+    if (ec)
+       return report(ec); 
+
+    char reply[max_length];
+    udp::endpoint sender_endpoint;
+    size_t reply_length = s.receive_from(
+        asio::buffer(reply, max_length), sender_endpoint, ec);
+
+    if (ec)
+       return report(ec);
+
+    std::cout << "Reply is: ";
+    std::cout.write(reply, reply_length);
+    std::cout << "\n";
+
+    return 0;
+  }
+</xmp>
+
+This same client, but using ```expected``` -
+
+<xmp>
+  int main(int argc, char* argv[])
+  {
+    if (argc != 3)
+    {
+      std::cerr << "Usage: blocking_udp_echo_client <host> <port>\n";
+      return 1;
+    }
+
+    asio::io_context io_context;
+
+    udp::socket s(io_context, udp::endpoint(udp::v4(), 0));
+
+    udp::resolver resolver(io_context);
+    auto endpoints = resolver.resolve(udp::v4(), argv[1], argv[2]);
+    if (!endpoints)
+      return report(endpoints.error());
+
+    std::cout << "Enter message: ";
+    char request[max_length];
+    std::cin.getline(request, max_length);
+    size_t request_length = std::strlen(request);
+    
+    auto res = s.send_to(asio::buffer(request, request_length), *endpoints.begin(), std::nothrow);
+    if (!res)
+       return report(res.error()); 
+
+    char reply[max_length];
+    udp::endpoint sender_endpoint;
+    auto reply_length = s.receive_from(
+        asio::buffer(reply, max_length), sender_endpoint, std::nothrow);
+
+    if (!reply_length)
+       return report(reply_length.error());
+
+    std::cout << "Reply is: ";
+    std::cout.write(reply, reply_length.value());
+    std::cout << "\n";
+
+    return 0;
+  }
+
+</xmp>
+<pre class=biblio>
+{
+
+}
+</pre>
