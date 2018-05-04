@@ -1,3 +1,6 @@
+# You can set these variables from the command line
+BUILDDIR = build
+
 .PHONY: help clean html deploy
 
 help:
