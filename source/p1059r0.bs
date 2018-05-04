@@ -1,6 +1,6 @@
 <pre class='metadata'>
-Title: Adapting Asio to use expected<T,E>
-Shortname: p1044
+Title: Adapting Asio to use std::expected
+Shortname: p1059
 Revision: 0
 Audience: LEWG
 Status: P
@@ -14,9 +14,11 @@ Markup Shorthands: markdown yes
 Background {#bg}
 ==========
 
-This paper explores adapting the API of the Asio networking library to use the proposed expected<T,E>
-facility. Asio's API, like that of the <filesystem> and the proposed Networking TS, uses pairs of
-functions for each operation, one which is expected to report disappointment's via exceptions, and
+This paper explores adapting the API of the Asio networking library to use the expected<T,E> type
+proposed in [[p0323]].
+
+Asio's [[asio]] API, like that of the ```<filesystem>``` and the Networking TS [[n4711]], use pairs
+of functions for each operation, one which is expected to report disappointment's via exceptions, and
 one which will return underlying API disappointments via error_code (but may also throw, e.g. bad_alloc).
 
 Two signatures for most operations {#ts}
@@ -270,6 +272,12 @@ This same client, but using ```expected``` -
         "href": "https//wg21.link/n4711",
         "title": "Networking Technical Specification",
         "authors": ["Jonathan Wakely", "Chris Kohlhoff"]
+    },
+    "p0323": {
+        "href": "https://wg21.link/p0323",
+        "title": "std::expected",
+        "authors": ["Vincent Botet", "JF Bastien"],
+        "date": "April 02, 2018"
     }
 }
 </pre>
