@@ -2,11 +2,13 @@
 Title: std::async() in an Executors World
 Shortname: p1044
 Revision: 0
+Audience: SG1
 Audience: LEWG
 Status: P
 Group: WG21
 Editor: Thomas Rodgers, RedHat, trodgers@redhat.com
 Editor: H Carter Edwards, Nvidia, hedwards@nvidia.com
+Editor: Mark Hoemmen, Sandia National Laboratories
 URL: 
 Abstract: We show an evolutionary path for code written to std::async() to leverage Executors
 Markup Shorthands: markdown yes
