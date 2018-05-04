@@ -14,16 +14,16 @@ Markup Shorthands: markdown yes
 Background {#bg}
 ==========
 
-This paper explores adapting the API of the Asio networking library to use the proposed expected<T,E> facility.
-Asio's API, like that of the <filesystem> and the proposed Networking TS, uses pairs of functions for each operation,
-one which is expected to report disappointment's via exceptions, and one which will return underlying API disappointments
-via error_code (but may also throw, e.g. bad_alloc).
+This paper explores adapting the API of the Asio networking library to use the proposed expected<T,E>
+facility. Asio's API, like that of the <filesystem> and the proposed Networking TS, uses pairs of
+functions for each operation, one which is expected to report disappointment's via exceptions, and
+one which will return underlying API disappointments via error_code (but may also throw, e.g. bad_alloc).
 
 Two signatures for most operations {#ts}
 ==================================
-Asio, like <filesystem> and the proposed Networking TS declare variants of most entry points which either report all
-errors as exceptions, or some, typically low level system API results, as an error_code passed to the call by reference.
-For example -
+Asio [[asio]], like <filesystem> and the proposed Networking TS [[n4711]] declare variants of most entry
+points which either report all errors as exceptions, or some, typically low level system API results, as
+an error_code passed to the call by reference. For example -
 
 <xmp>
   // This form throws on error
@@ -42,7 +42,7 @@ For example -
 Note, the second form is not marked noexcept, and thereform may also report errors by throwing, e.g.
 ```std::bad_alloc```. 
 
-It appears obvious that the second form should be the one adapted for use with ```expected<T,E>```. One
+It appears that the second form should be the one adapted for use with ```expected<T,E>```. One
 possibility is -
 
 <xmp>
@@ -50,9 +50,10 @@ possibility is -
   template <typename SyncReadStream, typename MutableBufferSequence>
   expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers);
 </xmp>
-`
+
 Another possibility is to promote ```error_code ``` to ```error_status``` as well as making the signature
-of the function ```noexcept```.
+of the function ```noexcept``` -
+
 <xmp>
   using expected_result = std::expected<std::size_t, std::exception>;
   template <typename SyncReadStream, typename MutableBufferSequence>
@@ -180,7 +181,6 @@ on handling ```error_code``` might read -
 
     udp::socket s(io_context, udp::endpoint(udp::v4(), 0));
 
-// TODO confirm error_code-ify this
     error_code ec;
     udp::resolver resolver(io_context);
     udp::resolver::results_type endpoints =
@@ -230,7 +230,7 @@ This same client, but using ```expected``` -
     udp::socket s(io_context, udp::endpoint(udp::v4(), 0));
 
     udp::resolver resolver(io_context);
-    auto endpoints = resolver.resolve(udp::v4(), argv[1], argv[2]);
+    auto endpoints = resolver.resolve(udp::v4(), argv[1], argv[2], std::nothrow);
     if (!endpoints)
       return report(endpoints.error());
 
@@ -239,7 +239,7 @@ This same client, but using ```expected``` -
     std::cin.getline(request, max_length);
     size_t request_length = std::strlen(request);
     
-    auto res = s.send_to(asio::buffer(request, request_length), *endpoints.begin(), std::nothrow);
+    auto res = s.send_to(asio::buffer(request, request_length), *endpoints->begin(), std::nothrow);
     if (!res)
        return report(res.error()); 
 
@@ -257,10 +257,19 @@ This same client, but using ```expected``` -
 
     return 0;
   }
-
 </xmp>
+
 <pre class=biblio>
 {
-
+    "asio": {
+        "href": "https://think-async.com/Asio/Documentation",
+        "title": "Asio documentation",
+        "authors": ["Chris Kohlhoff"]
+    },
+    "n4711": {
+        "href": "https//wg21.link/n4711",
+        "title": "Networking Technical Specification",
+        "authors": ["Jonathan Wakely", "Chris Kohlhoff"]
+    }
 }
 </pre>
