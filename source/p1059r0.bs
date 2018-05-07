@@ -87,7 +87,7 @@ The Problem with Partial Failure {#ppf}
 
 Asio's "composed" operations, in the form of freestanding functions such as ```asio::read()``` and
 ```asio::write()``` are implemented in terms of zero or more calls to the supplied stream's 
-```stm.read_more()``` and ```stm.write_more()``` methods. While an individual call to the underlying
+```stm.read_some()``` and ```stm.write_some()``` methods. While an individual call to the underlying
 stream type's methods might represent a single failed call, successful calls to the underlying stream
 may likely have occurred, resulting some amount of data being placed into a buffer by ```stm.read_some()```
 or written to the stream by ```stm.write_some()```.
@@ -101,7 +101,7 @@ the face partial, recoverable errors.
 Note, The throwing versions of these "composed" functions also suffer from this issue
 
 This suggests that perhaps there is a related type representing a partial failure, that can decay
-to ```std::expected```.
+to ```std::expected``.
 
 Asynchronous Completion Handlers {#ach}
 ================================
