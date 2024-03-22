@@ -1,9 +1,9 @@
 <pre class='metadata'>
-Title: A proposed direction for C++ Standard Networking based on IETF_TAPS
+Title: A proposed direction for C++ Standard Networking based on IETF TAPS
 Shortname: P3185
 Revision: 0
 Audience: SG4
-Status: D 
+Status: P
 Group: WG21
 URL: http://wg21.link/Pxxxx
 !Source: <a href="https://github.com/rodgert/papers/blob/master/source/p3185r0.bs">https://github.com/rodgert/papers/blob/master/source/p3185r0.bs</a>
