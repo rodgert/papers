@@ -13,7 +13,7 @@ clean:
 
 html:
 	bikeshed update
-	find ./source/ -name "*.bs" -type f | xargs -I{} -t -n1 bikeshed spec {}
+	find ./source/ -name "*.bs" -type f | xargs -I{} -t -n1 bikeshed --print=plain spec {}
 	mv ./source/*.html $(BUILDDIR)/html/
 	@echo
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/html."

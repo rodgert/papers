@@ -7,14 +7,13 @@ Status: P
 Group: WG21
 Editor: Thomas Rodgers, RedHat, trodgers@redhat.com
 URL:
-Abstract: An experience report on adapting an existing API to use expected<T,E>
+Abstract: An experience report on adapting an existing API to use expected```<T,E>```
 Markup Shorthands: markdown yes
 </pre>
 
 Background {#bg}
 ==========
-
-This paper explores adapting the API of the Asio networking library to use the expected<T,E> type
+This paper explores adapting the API of the Asio networking library to use the `expected<T,E>` type
 proposed in [[p0323]].
 
 Asio's [[asio]] API, like that of the ```<filesystem>``` and the Networking TS [[n4711]], use pairs
@@ -62,8 +61,7 @@ of the function ```noexcept``` -
   expected_result read(SyncReadStream& s, const MutableBufferSequence& buffers) noexcept;
 </xmp>
 
-Both of these approaches suffer from a common problem, namely the call signature is a match for the original
-throwing version of read. One possible approach is to use tag dispatching to resolve the ambiguity -
+Both of these approaches suffer from a common problem, namely the call signature is a match for the original throwing version of read. One possible approach is to use tag dispatching to resolve the ambiguity -
 
 <xmp>
   using expected_result = std::expected<std::size_t, asio::error_code>;

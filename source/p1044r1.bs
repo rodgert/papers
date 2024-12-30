@@ -1,0 +1,425 @@
+Proposed API {#api}
+========
+
+These types are from (generally) [[p3325]] and live in the `std::execution` namespace.
+
+`std::execution::property_key_list`
+------------------
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename... Ts>
+    class property_key_list { };
+
+    ...
+}
+</code></pre>
+
+`std::execution::is_property_key_list_v`
+------------------
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename T>
+    inline constexpr bool is_property_key_list_v = false;
+
+    template<typename... Ts>
+    inline constexpr bool is_property_key_list_v<property_key_list<Ts...>> = true;
+
+    ...
+}
+</code></pre>
+
+[TODO may not need this for exposition in this paper]
+
+`std::execution::merge_property_key_lists`
+------------------
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename... Ls>
+    class merge_property_key_lists;
+
+    template<typename... Ls>
+    using merge_property_key_lists_t = typename merge_property_key_lists<Ls...>::type;
+
+    template<>
+    class merge_property_key_lists<>
+    {
+        using type = property_key_list<>;
+    };
+
+    template<typename... Ts>
+    class merge_property_key_lists<property_key_list<Ts...>>
+    {
+        using type = property_key_list<Ts...>;
+    };
+
+    template<typename... Ts, typename U, typename... Us>
+        requires (std::same_as<U, Ts> || ...)
+    class merge_property_key_lists<  property_key_list<Ts...>
+                                      , property_key_list<U, Us...>>
+                : merge_property_key_lists<property_key_list<Ts...>,
+                                           property_key_list<Us...>>
+    { };
+
+    template<typename... Ts, typename U, typename... Us>
+    class merge_property_key_lists<  property_key_list<Ts...>
+                                      , property_key_list<U, Us...>>
+                : merge_property_key_lists<property_key_list<Ts..., U>,
+                                           property_key_list<Us...>>
+    { };
+
+    template<typename T, typename T1, typename T2, typename... Ts>
+    class merge_property_key_lists<T, T1, T2, Ts...>
+                : merge_property_key_lists<merge_property_key_lists_t<T, T1>, T2, Ts...>
+    { };
+
+    ...
+}
+</code></pre>
+
+`std::execution::queryable`
+------------------
+This concept determines whether or not a type is Queryable Environment
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename T>
+    concept queryable = 
+        requires
+        {
+            typename T::property_keys;
+            requires is_property_key_list_v<typename T::property_keys>;
+        };
+
+    ...
+}
+</code></pre>
+
+`std::execution::has_query`
+------------------
+This concept determines if an Environment supports a Query
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename E, typename Q>
+    concept has_query =
+        requires (E const& env)
+        { env.query(Q{ }); };
+
+    ...
+}
+</code></pre>
+
+`std::execution::has_query_default`
+------------------
+This concept determines whether or not an Environment has a default value for a given
+Query
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename Q>
+    concept has_query_default =
+        requires
+        { Q::default_value(); };
+
+    ...
+}
+</code></pre>
+
+`std::execution::property`
+------------------
+This concept what it means for a type to be a property
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename T>
+    concept property = 
+        std::is_empty_v<T>
+        && std::default_initializable<T>;
+
+    ...
+}
+</code></pre>
+
+`std::execution::has_property`
+------------------
+This concept determines if a Queryable has a given property
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename Q, typename P>
+    concept has_property =
+        queryable<Q>
+        && property<P>
+        && has_query<Q, P>;
+
+    ...
+}
+</code></pre>
+
+The types from [[3325]] are extended to support a type-erased runtime Environment with
+possibly empty properties.
+
+`std::execution::has_try_query`
+------------------
+This concept determines if an Environment supports try_query
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename E, typename Q>
+    concept has_try_query =
+        requires (E const& env);
+        { env.try_query(Q{ }); };
+
+    ...
+}
+</code></pre>
+
+`std::execution::maybe_has_property`
+------------------
+This concept determines if a Queryable may optionally have a given property
+<pre><code>
+namespace std::execution {
+    ...
+
+    template<typename Q, typename P>
+    concept maybe_has_property =
+        queryable<Q>
+        && property<P>
+        && has_try_query<Q, P>;
+
+    ...
+}
+</code></pre>
+
+`std::execution::runtime_property`
+------------------
+This concept determines if a type is a runtime type-erasable property
+<pre><code>
+namespace std::execution {
+
+    ...
+
+    template<typename T>
+    concept runtime_property =
+        property<T>
+        && requires { typename T::type_erased_type; };
+
+    ...
+}
+</code></pre>
+
+`std::execution::runtime_env`
+------------------
+Runtime, type erased Queryable Environment
+
+<pre><code>
+namespace std::execution {
+
+    ...
+
+    class runtime_env
+    {
+        runtime_env() noexcept = default;
+        operator runtime_env_ref() const noexcept;
+
+        template<runtime_property P, typename Tp>
+            requires std::constructible_from<typename P::type_erased_type, Tp>
+        void set(P prop, Tp&& init);
+
+        template<runtime_property P>
+        void unset(P) noexcept;
+
+        template<runtime_property P>
+        std::optional<typename P::type_erased_type> try_query(P prop) const
+            noexcept(std::is_nothrow_copy_constructible_v<typename P::type_erased_type>);
+    };
+
+    ...
+}
+</code></pre>
+
+`std::net::ip::address_v4`
+------------------
+IPV4 Address type
+
+<pre><code>
+namespace std::net::ip {
+
+    ...
+
+    class address_v4
+    {
+        using uint_type = uint_least32_t;
+        using bytes_type = std::array<unsigned char, sizeof(uint_type)>;
+
+        constexpr address_v4() noexcept;
+        constexpr explicit address_v4(bytes_type const& bytes) noexcept;
+        constexpr explicit address_v4(uint_type v);
+
+        constexpr address_v4(address_v4 const&) = default;
+        constexpr address_v4& operator=(address_v4 const&) = default;
+        constexpr address_v4(address_v4&&) = default;
+        constexpr address_v4& operator=(address_v4&&) = default;
+
+        std::strong_ordering operator<=>(address_v4 const& other) const noexcept;
+    };
+    ...
+}
+</code></pre>
+
+`std::net::ip::address_v6`
+------------------
+IPV6 Address type
+
+<pre><code>
+namespace std::net::ip {
+
+    ...
+
+    using scope_id_type = uint_least32_t;
+
+    class address_v6
+    {
+        static constexpr std::size_t const bytes_len = sizeof(::in6_addr::s6_addr);
+        using bytes_type = std::array<unsigned char, bytes_len>;
+
+        constexpr address_v6() noexcept;
+
+        constexpr explicit address_v6(bytes_type const& bytes,
+                                      scope_id_type scope = 0)
+                noexcept(std::numeric_limits<bytes_type::value_type>::max() == 0xff);
+
+        constexpr address_v6(address_v6 const&) = default;
+        constexpr address_v6& operator=(address_v6 const&) = default;
+        constexpr address_v6(address_v6&&) = default;
+        constexpr address_v6& operator=(address_v6&&) = default;
+
+        std::strong_ordering operator<=>(address_v6 const& other) const noexcept;
+    };
+    ...
+}
+</code></pre>
+
+`std::net::ip::address_v6`
+------------------
+IPV6 Address type
+
+<pre><code>
+namespace std::net::ip {
+
+    ...
+
+    class address
+    {
+        constexpr explicit address(address_v4 addr);
+        constexpr explicit address(address_v6 addr);
+
+        constexpr bool is_v4() const noexcept;
+        constexpr bool is_v6() const noexcept;
+
+        std::strong_ordering operator<=>(address const&) const noexcept = default;
+    };
+
+    ...
+}
+</code></pre>
+
+`std::net::hostname`
+------------------
+Hostname type
+
+<pre><code>
+namespace std::net {
+
+    ...
+
+    class hostname
+    {
+        hostname(std::string_view str);
+
+        ...
+    };
+
+    ...
+}
+</code></pre>
+
+`std::net::interface`
+------------------
+Interface type
+
+<pre><code>
+namespace std::net {
+
+    ...
+
+    class interface
+    {
+        interface(std::string_view str);
+
+        ...
+    };
+
+    ...
+}
+
+`std::net::service`
+------------------
+Service type
+
+<pre><code>
+namespace std::net {
+
+    ...
+
+    class service
+    {
+        service(std::string_view str);
+
+        ...
+    };
+
+    ...
+}
+
+`std::net::single_source_multicast_group_address`
+------------------
+Single source multicast group address type
+
+<pre><code>
+namespace std::net {
+
+    ...
+
+    class single_source_multicast_group_address
+    {
+        single_source_multicast_group_address(ip::address group, ip::address source) noexcept;
+
+        ip::address const& group() const noexcept;
+        ip::address const& source() const noexcept;
+
+        ...
+    };
+
+    ...
+}
+
+... additional supporting types ...
+
+`std::net::properties::endpoint`
+------------------
+A network endpoint, base type for local_endpoint and remote_endpoint
+
+</code></pre>
