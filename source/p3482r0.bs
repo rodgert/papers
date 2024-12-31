@@ -226,6 +226,7 @@ Trust verification callbacks as sequence senders - [[TAPS_interface]] section 6.
 > supplied during Connection establishment.  These are best handled as client-provided callbacks. Callbacks
 > block the progress of the Connection establishment, which distinguishes them from other events in the transport
 > system.  How callbacks and events are implemented is specific to each implementation.
+
 As noted, these callbacks are intended to block the forward progress of establishing a
 connection. Indeed, these callbacks may require input from a user dialog in a UI, and remain blocked indefinitely
 if the user strolls off for a good strong cuppa, while somewhere in the bowels of the networking implementation an

@@ -1,1 +1,4 @@
 *.swp
+source/*.html
+build/*
+.DS_Store
