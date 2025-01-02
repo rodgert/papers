@@ -1137,6 +1137,24 @@ namespace std::net::security_props {
 }
 </xmp></code></pre>
 
+## Resolving Endpoints
+Resolve an endpoint.
+
+<pre><code><xmp>
+namespace std::net {
+    _exposition only_
+    namespace detail {
+        struct resolve_t
+        {
+            template<typename Endpoint>
+            resolve-result-type operator()(const Endpoint&);
+        };
+    }
+    using detail::resolve_t;
+    inline constexpr resolve_t resolve{ };
+}
+</xmp></code></pre>
+
 ## Obtaining Connections
 
 ### `net::initiate`
