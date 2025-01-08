@@ -161,6 +161,15 @@ working on a socket type. Certain socket-oriented operations in [[p2762]] would 
 instance, anything related to building a socket acceptor is part of the connection type returned by the 
 `listen()` CPO and is library implementation detail that is not exposed to the library user.
 
+[[p1860]] makes the case that "C++ Networking Must Be Secure by Default" and [[p1861]] "Secure Networking in C++"
+sketches out a suggested API for this based on [[TAPS_interface]] and Apple's Network Framework (see [[ANF]]). The
+design proposed here differs substantially in detail from [[p1861]] but conceptually they are quite similar. The
+"Implementability" section of [[p1861]] discusses the author's experience implenting these concepts over
+Apple's Networking Framework. It is expected that the proposal here will be similarly implementable, and indeed
+any Standard Library implementation of this API SHOULD prefer an appropriate platform provided implementation
+where one exists, in particular to meet the goal outlined by [[p1860]]. Unfortunately, at present, Apple's Network
+Framework is the only such implementation.
+
 The committee typically defers to LEWG as the ultimate bikeshedder/arbiter of naming things, however SG4 should
 provide guidance and encouragement to LEWG in choosing names and concepts to avoid deviating unnecessarily
 from [[TAPS_Arch]] so that there is a common vocabulary with other TAPS implementations.
@@ -212,6 +221,10 @@ static members of the `transport` and `security` property sets.
 The set of properties allowed should be open-ended. This paper doesn't contemplate how an implementation
 might make use of this flexibility, other than to propose that `connect()`, `listen()`, and `rendezvous()` be
 expressed as CPOs, which would allow customization over how the properties of a preconnection are processed.
+
+In order to meet the aims of [[p1860]] the default choices made by an implementation when presented with the
+minimal, default set of security properties, MUST result in the creation of "secure" transport connection. This
+is the assumption [[p1861]]'s design makes as well.
 
 The security handler properties for trust verification and challenge handling are also inherently asynchronous
 operations.  [[TAPS_interface]] envisions these would be typical callback closures, but these operations
