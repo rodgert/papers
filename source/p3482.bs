@@ -24,7 +24,8 @@ We propose modifying the API proposed by [[p2762]] to support IETF TAPS as a bas
 ## r0 → r1
 
 Fixed typographical issues. Added `std::octet` and changed types which are defined by the governing Internet Protocol
-RFCs in terms of a type of exactly 8 bits to use `std::octet`. 
+RFCs in terms of a type of exactly 8 bits to use `std::octet`. Strengthen reference to [[p1860]] and the requirement
+of secure connections as the default.
 
 ## r0
 
