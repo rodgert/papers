@@ -6,7 +6,7 @@ Revision: 0
 Audience: SG4
 Status: P
 Group: WG21
-URL: http://wg21.link/Pxxxx
+URL: http://wg21.link/P3482
 !Source: <a href="https://github.com/rodgert/papers/blob/master/source/p3185r0.bs">https://github.com/rodgert/papers/blob/master/source/p3185r0.bs</a>
 Editor: Thomas Rodgers, Woven By Toyota, thomas.rodgers@woven-planet.global
 Editor: Dietmar Kühl, Bloomberg, dkuhl@bloomberg.net
@@ -14,6 +14,21 @@ Abstract: Design proposal for creating IETF TAPS based network connections
 Date: 2024-10-14
 Markup Shorthands: markdown yes
 </pre>
+
+# Abstract
+
+We propose modifying the API proposed by [[p2762]] to support IETF TAPS as a basis for standard networking in C++.
+
+# Revision History
+
+## r0 → r1
+
+Fixed typographical issues. Added `std::octet` and changed types which are defined by the governing Internet Protocol
+RFCs in terms of a type of exactly 8 bits to use `std::octet`. 
+
+## r0
+
+[[p3482R0]] was the first published version of the paper.
 
 # Background
 
@@ -164,7 +179,7 @@ instance, anything related to building a socket acceptor is part of the connecti
 [[p1860]] makes the case that "C++ Networking Must Be Secure by Default" and [[p1861]] "Secure Networking in C++"
 sketches out a suggested API for this based on [[TAPS_interface]] and Apple's Network Framework (see [[ANF]]). The
 design proposed here differs substantially in detail from [[p1861]] but conceptually they are quite similar. The
-"Implementability" section of [[p1861]] discusses the author's experience implenting these concepts over
+"Implementability" section of [[p1861]] discusses the author's experience implementing these concepts over
 Apple's Networking Framework. It is expected that the proposal here will be similarly implementable, and indeed
 any Standard Library implementation of this API SHOULD prefer an appropriate platform provided implementation
 where one exists, in particular to meet the goal outlined by [[p1860]]. Unfortunately, at present, Apple's Network
@@ -558,7 +573,7 @@ namespace std::execution {
 </xmp></code></pre>
 
 ## Octets
-A type which is guarenteed to be exactly 8 bits
+A type which is guaranteed to be exactly 8 bits
 <pre><code><xmp>
 namespace std::net {
 
@@ -729,7 +744,7 @@ namespace std::net {
 Nested namespace containing strongly typed properties of endpoints.
 
 <pre><code><xmp>
-namespace std::net::transport_props {
+namespace std::net::endpoint_props {
 
     ...
 
@@ -1169,8 +1184,41 @@ namespace std::net::security_props {
 }
 </xmp></code></pre>
 
+## Preconnections
+
+### `net::preconnection`
+Describe a preconnection.
+
+<pre><code><xmp>
+namespace std::net {
+    class preconnection
+    {
+    public:
+        template<execution::queryable LocalEndpoint,
+                 execution::queryable RemoteEndpoint,
+                 execution::queryable TransportProps,
+                 execution::queryable SecurityProps>
+        preconnection(LocalEndpoint local, RemoteEndpoint remote,
+                      TransportProps transport, SecurityProps security);        
+
+        template<execution::queryable LocalEndpoint,
+                 execution::queryable RemoteEndpoint,
+                 execution::queryable TransportProps>
+        preconnection(LocalEndpoint local, RemoteEndpoint remote,
+                      TransportProps transport = /* implementation defined default */);
+
+        template<execution::queryable RemoteEndpoint,
+                 execution::queryable TransportProps>
+        preconnection(RemoteEndpoint remote,
+                      TransportProps transport = /* implementation defined default */);
+    }:
+}
+</xmp></code></pre>
+
+
 ## Resolving Endpoints
-Resolve an endpoint.
+### `net::resolve`
+Resolve an endpoint, remote, local, or both.
 
 <pre><code><xmp>
 namespace std::net {
@@ -1178,8 +1226,14 @@ namespace std::net {
     namespace detail {
         struct resolve_t
         {
-            template<typename Endpoint>
+            template<execution::queryable Endpoint>
             resolve-result-type operator()(const Endpoint&);
+
+            template<execution::queryable LocalEndpoint,
+                     execution::queryable RemoteEndpoint)
+            resolve-result-type operator()(const LocalEndpoint&, const RemoteEndpoint&);
+
+            resolve-result-type operator(const preconnection&);
         };
     }
     using detail::resolve_t;
@@ -1299,6 +1353,13 @@ A Future paper revision to formally propose the API changes extending/modifying 
         "href": "https://wg21.link/p3325",
         "title": "There are exactly 8 bits in a byte",
         "authors": ["JF Bastien"]
+    },
+    "p3482R0":
+    {
+        "href": "https://wg21.link/p3482r0",
+        "title": "Design for C++ networking based on IETF TAPS",
+        "date" : "2024-10-14",
+        "authors" : ["Thomas Rodgers", "Dietmar Kühl"]
     },
     "asio":
     {
