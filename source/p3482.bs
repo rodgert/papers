@@ -132,7 +132,7 @@ protocols.
 
 A `default_framer` could behave similarly to typical Berkeley socket code and yield the octets received
 thus far. Higher level examples of framers might include an `http_framer` that would parse HTTP header
-properties and message boundaries from the underlying stream of bytes. User defined framers could do
+properties and message boundaries from the underlying stream of octets. User defined framers could do
 things like using Thrift serialization/deserialization to operate on strongly typed domain types rather than
 spans of octets.
 
@@ -169,6 +169,15 @@ Apple's Networking Framework. It is expected that the proposal here will be simi
 any Standard Library implementation of this API SHOULD prefer an appropriate platform provided implementation
 where one exists, in particular to meet the goal outlined by [[p1860]]. Unfortunately, at present, Apple's Network
 Framework is the only such implementation.
+
+[[p3477]] seeks to define a byte, and `std::byte` as being exactly 8 bits for C++. The paper makes a strong
+argument for why C++ ought to define a byte as exactly 8 bits and there are valid counter arguments for targeting
+platforms where a byte is not 8 bits. Networking however, requires a more precise definition. The definitions for
+the Internet Protocol comes from [[RFC791]] and [[RFC2460]] and define the fundamental types and payload framing
+in terms of multiples of _octets_ which are *exactly* 8 bits. This proposal suggests defining `std::net::octet`
+to be a type of exactly 8 bits. The exact definition may depend on [[p3477]] being adopted.  All types which
+represent network data (e.g. message bodies, elements of IPv4 and IPv6 addresses, etc.) as sequences of individually
+addressable elements define those sequences to be sequences of `std::net::octet`.
 
 The committee typically defers to LEWG as the ultimate bikeshedder/arbiter of naming things, however SG4 should
 provide guidance and encouragement to LEWG in choosing names and concepts to avoid deviating unnecessarily
@@ -548,6 +557,17 @@ namespace std::execution {
 }
 </xmp></code></pre>
 
+## Octets
+A type which is guarenteed to be exactly 8 bits
+<pre><code><xmp>
+namespace std::net {
+
+    ...
+    using octet = uint8_t; // _Exposition Only_
+    ...
+}
+</xmp></code></pre>
+
 ## Properties of endpoints
 
 ### `std::net::ip::address_v4`
@@ -562,10 +582,10 @@ namespace std::net::ip {
     {
     public:
         using uint_type = uint_least32_t;
-        using bytes_type = std::array<unsigned char, sizeof(uint_type)>;
+        using octets_type = std::array<octet, sizeof(uint_type)>;
 
         constexpr address_v4() noexcept;
-        constexpr explicit address_v4(bytes_type const& bytes) noexcept;
+        constexpr explicit address_v4(octets_type const& octets) noexcept;
         constexpr explicit address_v4(uint_type v);
     };
     ...
@@ -585,14 +605,13 @@ namespace std::net::ip {
     class address_v6
     {
     public:
-        static constexpr std::size_t const bytes_len = sizeof(::in6_addr::s6_addr);
-        using bytes_type = std::array<unsigned char, bytes_len>;
+        static constexpr std::size_t const octets_len = sizeof(::in6_addr::s6_addr);
+        using octets_type = std::array<octet, octets_len>;
 
         constexpr address_v6() noexcept;
 
-        constexpr explicit address_v6(bytes_type const& bytes,
-                                      scope_id_type scope = 0)
-                noexcept(std::numeric_limits<bytes_type::value_type>::max() == 0xff);
+        constexpr explicit address_v6(octets_type const& octets,
+                                      scope_id_type scope = 0);
     };
 
     ...
@@ -1275,6 +1294,12 @@ A Future paper revision to formally propose the API changes extending/modifying 
         "title": "A Utility for Creating Execution Environments",
         "authors": ["Eric Niebler"]
     },
+    "p3477":
+    {
+        "href": "https://wg21.link/p3325",
+        "title": "There are exactly 8 bits in a byte",
+        "authors": ["JF Bastien"]
+    },
     "asio":
     {
         "href": "https://think-async.com/Asio",
@@ -1286,6 +1311,18 @@ A Future paper revision to formally propose the API changes extending/modifying 
         "href": "https://wg21.link/n4734",
         "title": "Working Draft, C++ Extensions for Networking",
         "date": "2018-04-04"
+    },
+    "RFC791":
+    {
+        "href": "https://datatracker.ietf.org/doc/html/rfc791",
+        "title": "INTERNET PROTOCOL",
+        "date": "September 1981"
+    },
+    "RFC2460":
+    {
+        "href": "https://datatracker.ietf.org/doc/html/rfc2460",
+        "title": "Internet Protocol, Version 6 (IPv6) Specification",
+        "date": "December 1998"
     },
     "TAPS_interface":
     {
