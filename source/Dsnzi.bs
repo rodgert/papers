@@ -1,0 +1,644 @@
+<pre class='metadata'>
+Title: Scalable Non-Zero Indicators
+Shortname: Dsnzi
+Revision: 0
+Audience: SG1
+Status: D
+Group: WG21
+URL: http://wg21.link/Dsnzi
+!Source: <a href="https://github.com/rodgert/papers/blob/master/source/Dsnzi.bs">github.com/rodgert/papers/blob/master/source/Dsnzi.bs</a>
+!Implementation: libstdc++ branch — TBD
+Editor: Thomas Rodgers, Hull Tactical Asset Allocation, thomas@hulltactical.com
+Abstract: Proposes a scalable non-zero indicator primitive based on Ellen, Lev, Luchangco, and Moir [[ELLM07]], addressing contention bottlenecks in reference counting, reader-writer locking, RCU and hazard-pointer quiescence detection, work-stealing termination detection, and other concurrent-runtime lifetime predicates where the only query of interest is whether a counter is zero.
+Date: 2026-05-04
+Markup Shorthands: markdown yes
+</pre>
+
+Motivation {#motivation}
+==========
+
+A *non-zero indicator* (NZI) is a counter-like object that supports
+`arrive`, `depart`, and `query` operations, where `query` returns only
+whether the counter is zero or non-zero. Many concurrent-runtime
+lifetime predicates reduce to NZIs:
+
+  * "Are there any outstanding references to this object?"
+  * "Are there any readers in this critical section?"
+  * "Is any thread currently using this hazard pointer?"
+  * "Are there any tasks still in flight in this work-stealing scheduler?"
+  * "Are there any in-flight callbacks before I disconnect this slot?"
+
+The naive implementation — a single shared `atomic<int>` counter — does
+not scale: every `arrive` and `depart` contends on a single cache line,
+and the read-mostly workloads typical of NZI clients (many concurrent
+arrives and departs, occasional zero-queries) suffer write-write
+contention proportional to the level of concurrency.
+
+Several existing C++ standard library facilities encode an
+indicator-style lifetime predicate over a counter that does not scale:
+
+  * `std::shared_ptr` strong-count is a single `atomic<long>` and is a
+    well-known scalability bottleneck under high contention.
+  * `std::shared_mutex` reader-acquisition centralizes on a small set
+    of state words and exhibits writer-bias issues that compound the
+    contention.
+  * Proposed `<rcu>` quiescent-state tracking and `<hazptr>` hazard
+    enumeration both reduce to "is anyone here?" queries that
+    `atomic<int>` answers with poor scaling characteristics.
+  * `std::latch` encodes the same arrive/wait pattern but is one-shot:
+    it cannot re-arm. Many lifetime-predicate use cases need a
+    re-armable latch.
+  * The `operation_state` child-completion predicate in [[P2300]]
+    "Senders and Receivers" is naturally a non-zero indicator over an
+    asymmetric (potentially many-spawn, single-await) workload.
+
+[[ELLM07]] introduced *Scalable Non-Zero Indicators* (SNZIs), which
+spread arrive/depart traffic across a tree of per-thread leaf counters
+and propagate state changes upward only on transitions that affect the
+root indicator. The result is amortized O(1) cost per operation under
+contention, with the indicator-state observable through a single
+load-acquire on a designated indicator bit.
+
+This paper proposes a single SNZI primitive that can serve as the
+substrate for the use cases above, with two API tiers that match how
+the primitive is actually used:
+
+  1. A low-level `snzi_indicator<Root>` parameterized on
+     caller-supplied storage, allowing the indicator bit to co-locate
+     with application data (e.g. packed into the strong-count word of
+     a `shared_ptr` control block, or into the state word of a
+     `shared_mutex`).
+  2. A convenience type `snzi` that owns its own root storage and
+     commits to an ABI-stable layout. Drop-in for cases where the
+     indicator does not need to co-locate with application state.
+
+
+Use cases {#usecases}
+=========
+
+These are the canonical use cases driving the design. Each is naturally
+expressed as an NZI; today each is implemented with mechanisms (raw
+`atomic<int>`, ad-hoc tree counters, per-thread state) that are
+either non-scalable or duplicative.
+
+<table>
+<tr><th>Use case</th><th>Tier</th><th>Why</th></tr>
+
+<tr><td>**Reference counting** (intrusive_ptr / `shared_ptr` strong)</td>
+<td>Low-level</td>
+<td>Indicator co-located with the strong/weak count word for atomicity
+of combined updates.</td></tr>
+
+<tr><td>**Reader/writer locks**</td><td>Low-level</td>
+<td>Reader presence packed alongside writer state for combined CAS.</td></tr>
+
+<tr><td>**RCU quiescence** (proposed `<rcu>`)</td><td>Low-level</td>
+<td>Indicator co-located with epoch / generation word.</td></tr>
+
+<tr><td>**Hazard-pointer enumeration** (proposed `<hazptr>`)</td><td>Low-level</td>
+<td>Indicator per hazard slot, co-located with slot state.</td></tr>
+
+<tr><td>**Work-stealing termination detection**</td><td>Convenience</td>
+<td>Standalone counter; Cilk/TBB-style spawn/sync. Bulk arrive(n) for
+spawn-many.</td></tr>
+
+<tr><td>**P2300 `operation_state` child-completion**</td><td>Convenience</td>
+<td>Standalone; naturally fits the `bulk` algorithm's fan-out pattern
+([[P2300]]).</td></tr>
+
+<tr><td>**Async I/O drain** (executor / `io_context` shutdown)</td><td>Convenience</td>
+<td>Standalone counter of in-flight operations; `wait_until_zero` for
+drain.</td></tr>
+
+<tr><td>**`stop_source` / `jthread` cleanup**</td><td>Convenience</td>
+<td>Drain in-flight callbacks before destruction.</td></tr>
+
+<tr><td>**Re-armable latches**</td><td>Convenience</td>
+<td>`std::latch` cannot re-arm; SNZI's 0→nonzero→0 cycle naturally supports it.</td></tr>
+
+<tr><td>**Connection / handle pool drain**</td><td>Convenience</td>
+<td>Standalone "any handles in use?" predicate.</td></tr>
+
+<tr><td>**Telemetry "any in-flight RPCs?" gauges**</td><td>Convenience</td>
+<td>Where only zero-vs-nonzero matters; full counter is wasted state.</td></tr>
+</table>
+
+
+Algorithm summary {#algo}
+=================
+
+The algorithm is the binary-tree variant from [[ELLM07]]. We provide
+the summary needed to follow the API and design discussion; rigorous
+correctness arguments are deferred to the cited paper.
+
+A balanced binary tree of counters, leaves at index ⌈N/2⌉..N-1 of an
+array, root at index 0. Each thread hashes to a leaf and arrives /
+departs there. State changes propagate upward on transitions that
+change a node's "is non-zero?" status:
+
+  * **Leaf arrive**: atomic CAS to increment leaf counter. If the
+    leaf was zero, the leaf must announce itself non-zero to its
+    parent (recursive arrive on the parent), then publish a counter
+    value of 1 on the leaf. The intermediate "announced but not yet
+    published" state is encoded as a special value `½`.
+  * **Leaf depart**: atomic CAS to decrement. If the leaf transitions
+    from 1 to 0, recursively depart the parent.
+  * **Root arrive/depart**: similar, but the root's transitions
+    additionally drive the application-visible indicator bit and
+    issue `notify_all` on the indicator-storage word.
+
+A version stamp stored in each tree node guards against an A-B-A
+hazard between concurrent arrive (raising the leaf) and depart
+(lowering the leaf back to zero).
+
+Amortized cost is O(1) per arrive/depart in the absence of root-
+transition contention, with worst-case O(log N) propagation when the
+indicator transitions.
+
+
+Proposed API {#api}
+============
+
+Two tiers {#tiers}
+---------
+
+```cpp
+namespace std {
+    // Low-level — caller supplies the Root.
+    template<class Root, std::size_t TreeSize = /*default*/>
+    class snzi_indicator;
+
+    // Convenience — owns its own root storage.
+    class snzi;
+}
+```
+
+`snzi_indicator<Root, TreeSize>` is the algorithmic primitive, fully
+generic over storage. The caller (e.g. a shared_ptr control-block
+implementation) supplies a `Root` type that exposes the indicator bit
+and a few atomic operations on a word of the caller's choosing. The
+indicator bit is thus *co-located* with whatever application state
+already lives in that word — no extra storage, no extra cache line.
+
+`snzi` is one specific instantiation of `snzi_indicator` over a
+library-supplied default Root, with the storage word owned internally.
+The convenience type commits to a specific ABI-stable layout (see
+[[#abi]]) and is the right choice when the indicator does not need to
+co-locate with application state.
+
+
+The Root concept {#root}
+----------------
+
+A type `Root` models the SNZI Root concept iff it provides:
+
+```cpp
+struct Root {
+    using version_type = /* unsigned integer, ≥ 16 bits */;
+
+    // Unconditionally publish the indicator value, bumping the version.
+    void snzi_write(bool indicator) noexcept;
+
+    // Load the indicator and a version stamp atomically (the LL of LL/SC).
+    std::pair<bool, version_type> snzi_load_linked() const noexcept;
+
+    // Conditional store: if version still matches, publish indicator
+    // and bump version. Returns true iff store occurred.
+    bool snzi_store_conditional(bool indicator,
+                                version_type expected) noexcept;
+
+    // Wait/notify hooks (required iff the SNZI client uses wait_*).
+    void snzi_notify_indicator() noexcept;
+    void snzi_wait_indicator(bool target) const noexcept;
+};
+```
+
+`snzi_load_linked` returns a `std::pair` rather than a custom struct
+specifically to avoid imposing member-name constraints. Call sites use
+structured bindings:
+
+```cpp
+auto [indicator, version] = root.snzi_load_linked();
+```
+
+### Semantic obligations ### {#root-semantics}
+
+  1. `snzi_write(b)` and `snzi_store_conditional(b, _)` must publish
+     `b` such that a subsequent `snzi_load_linked()` from a thread
+     synchronizing-with the write observes `b`.
+  2. The version stamp must change between any two writes. *In
+     particular a write of the same indicator value must still bump
+     the version.* This is what defends the depart-root LL/SC against
+     A-B-A.
+  3. `snzi_notify_indicator` must be ordered-after the write that
+     transitions the indicator. Implementations may coalesce
+     notifications across writes that don't change the indicator
+     value, but must not skip a notification on a true transition.
+  4. `snzi_wait_indicator(t)` returns when the indicator is observed
+     equal to `t`. Spurious wakeups are permitted (per `atomic_wait`
+     general semantics); the SNZI implementation re-checks on return.
+
+
+### Default Root ### {#root-default}
+
+The standard library supplies a default Root that owns its storage
+word and lays out the indicator and version bits at parameterizable
+positions. A typical instantiation reserves:
+
+  * 1 bit for the indicator
+  * 16 bits for the version (free-running mod 2^16)
+  * up to 47 bits unallocated (available for application-side packing
+    in the low-level tier; unused in the convenience tier)
+
+This default supports both the "I want to use SNZI standalone"
+scenario and the "I want to pack the indicator into my existing word"
+scenario, with parameterization via template arguments rather than
+runtime configuration (so layout choices are fully resolved at
+compile time and the bit-manipulation code optimizes well).
+
+
+Convenience snzi {#snzi}
+----------------
+
+```cpp
+class snzi {
+public:
+    snzi() noexcept;
+    snzi(const snzi&) = delete;
+    snzi& operator=(const snzi&) = delete;
+    snzi(snzi&&) = delete;
+    snzi& operator=(snzi&&) = delete;
+    ~snzi();
+
+    void arrive() noexcept;
+    void arrive(std::size_t n) noexcept;
+
+    void depart() noexcept;
+    void depart(std::size_t n) noexcept;
+
+    [[nodiscard]] bool query() const noexcept;
+
+    void wait_until_zero() const noexcept;
+    void wait_until_nonzero() const noexcept;
+};
+```
+
+The type is non-copyable and non-movable: active per-leaf state has no
+coherent move semantics, and concurrent users would observe undefined
+behavior across a move.
+
+
+Bulk arrive and depart {#bulk}
+======================
+
+`arrive(n)` raises the indicator's logical count by `n`. `depart(n)`
+lowers it by `n`. Both compose with their unary forms:
+
+```cpp
+s.arrive(5);   // equivalent to five s.arrive() calls, but cheaper
+s.depart(5);   // equivalent to five s.depart() calls, but cheaper
+```
+
+Algorithmic cost: `arrive(n)` and `depart(n)` are no more expensive
+than their unary variants. The leaf CAS adds (or subtracts) `n`
+instead of 1, and the parent-propagation traffic is unchanged: a
+leaf transitioning 0 → n still announces exactly once to its
+parent, just as 0 → 1 does. Bulk subsumes n unary calls, never
+worse, sometimes strictly better.
+
+The use cases are:
+
+  * **`bulk` algorithm fan-out** in [[P2300]]. A `bulk(n, f)`
+    invocation on an `operation_state` predicate spawns n logical
+    children; the predicate's arrive should be `arrive(n)`, not n
+    separate `arrive()` calls, both for performance and because the
+    spawn is logically one event.
+  * **Cilk-style spawn-N-children** in work-stealing schedulers.
+  * **Batched executor `post_n`**.
+  * **Reference counting `copy_n`** when copying a sequence of
+    references.
+
+Issue: the bulk-on-leaf-in-½-state case has a subtle correctness
+argument (multiple concurrent bulk arrivers race to commit a non-1
+value). The freestanding implementation handles this correctly via
+the standard helping-and-undo pattern from [[ELLM07]], but the
+formal argument deserves a careful write-up here for a future
+revision.
+
+
+Wait and notify {#waitnotify}
+===============
+
+The convenience type and the low-level type both expose
+`wait_until_zero()` and `wait_until_nonzero()`. These delegate to the
+Root's `snzi_wait_indicator` and `snzi_notify_indicator` operations.
+
+Notification is fired exclusively at root transitions (0 → non-zero
+or non-zero → 0). Interior tree-node CAS operations and version-bit
+updates do not notify. This matters for cost: arrive/depart traffic
+through the leaves is bounded only by application concurrency, while
+indicator transitions are bounded by the rate at which the underlying
+predicate actually flips — typically much rarer (e.g. a `shared_ptr`
+strong count flips to zero only on final release).
+
+The natural implementation is built on `atomic_ref::wait` /
+`notify_all` (C++20). A predicate-style wait, as proposed in
+[[P2643]] "Improving C++ Concurrency Features," yields a much cleaner
+implementation:
+
+```cpp
+void wait_until_zero() const noexcept {
+    storage.wait_predicate([](auto v) {
+        return (v & indicator_mask) == 0;
+    });
+}
+```
+
+Without P2643, the same operation is correct but pays a cost in
+spurious wakeups: every depart bumps the version stamp, which would
+otherwise wake naive `atomic_wait(prev_value)` callers. The SNZI
+implementation re-checks on return and re-issues the wait if the
+target state is not yet reached.
+
+Recommendation: target P2643 when available, but ensure the SNZI
+implementation degrades gracefully on the C++20 baseline so SNZI
+ships independent of P2643's standardization timeline.
+
+
+Memory ordering {#order}
+===============
+
+Memory ordering choices are summarized below. Each is the minimum
+sufficient for the algorithm; we expect this section to attract
+reviewer scrutiny and have prepared explicit defenses for each
+choice in the implementation.
+
+<table>
+<tr><th>Operation</th><th>Order</th><th>Justification</th></tr>
+
+<tr><td>Leaf load (arrive/depart inner loop)</td><td>relaxed</td>
+<td>The CAS provides the synchronization; loading the value to compute
+the next CAS does not need ordering.</td></tr>
+
+<tr><td>Leaf CAS, no propagation</td><td>release on success, relaxed
+on failure</td><td>Pure counter motion; no inter-thread visibility
+requirement until a propagation event.</td></tr>
+
+<tr><td>Leaf CAS that propagates to parent (½ → 1, or 1 → 0)</td>
+<td>release on success, relaxed on failure</td><td>The publication
+of the leaf's new state must happen-before the parent's
+observation.</td></tr>
+
+<tr><td>Root indicator publication
+(`snzi_write` / `snzi_store_conditional` success)</td>
+<td>release</td><td>Pairs with `query` and `wait_*`
+acquires.</td></tr>
+
+<tr><td>`snzi_notify_indicator`</td><td>after release</td>
+<td>Sequenced after the publication.</td></tr>
+
+<tr><td>`query`</td><td>acquire</td>
+<td>Must observe the publication's release.</td></tr>
+
+<tr><td>`wait_*` recheck</td><td>acquire</td>
+<td>Same as `query`.</td></tr>
+</table>
+
+
+ABI considerations {#abi}
+==================
+
+Every layout decision in the convenience `snzi` type becomes
+ABI-permanent at first ship. Tabulated:
+
+<table>
+<tr><th>Decision</th><th>Default (proposed)</th><th>Rationale</th></tr>
+
+<tr><td>Tree size</td><td>32 nodes (16 leaves)</td>
+<td>Initial benchmarks (see [[#bench]]) plateau at 16 leaves on a
+16-thread machine. Larger-machine data may justify revisiting before
+lockdown.</td></tr>
+
+<tr><td>Cacheline padding</td><td>`alignas(64)`</td>
+<td>Matches x86-64 / ARMv8 cache lines. Apple Silicon and recent
+Intel have effective 128-byte lines. The choice is conservative
+(works everywhere) but suboptimal on those targets.</td></tr>
+
+<tr><td>Root word size</td><td>`uint64_t`</td>
+<td>Wide enough for indicator + version + caller's data. Lock-free on
+all targets that support `atomic<uint64_t>`.</td></tr>
+
+<tr><td>Root word bit layout</td><td>indicator bit 63; version bits
+15..0 (16-bit); bits 62..16 owned by application or unused</td>
+<td>16-bit version supports realistic write rates without aliasing.
+Three reserved bits at 62..60 hold space for future extensions
+(lock-bit, drain-bit, weighted-counter mode).</td></tr>
+
+<tr><td>Tree node alignment</td><td>`alignas(64)`</td>
+<td>Same as cacheline.</td></tr>
+
+<tr><td>Default leaf-selector</td><td>`hash(this_thread::get_id()) %
+leaf_count`</td><td>Hosted-only by default; pluggable for
+freestanding (see [[#open]]).</td></tr>
+
+<tr><td>Movability/copyability</td><td>non-movable, non-copyable</td>
+<td>Active per-leaf state has no coherent move semantics; concurrent
+users would observe UB.</td></tr>
+</table>
+
+The low-level `snzi_indicator<Root, TreeSize>` tier exposes layout
+choices via the type system: different `TreeSize` values produce
+different types, so users who need different choices simply
+instantiate their own. There is no ABI clash between e.g.
+`snzi_indicator<R, 16>` and `snzi_indicator<R, 32>`.
+
+Three reserved bits in the convenience type's root word (bits 62..60)
+provide an extension surface without ABI break. Once any of these is
+allocated in a future revision, that allocation becomes ABI-permanent
+for the default Root; custom Roots are unaffected.
+
+If the convenience type ever requires an ABI-incompatible change
+(e.g. raising the default tree size from 32 to 64 because larger-
+machine data justifies it), the libstdc++ inline-namespace versioning
+machinery (`_GLIBCXX_BEGIN_NAMESPACE_VERSION`) provides the recovery
+path: `std::__9::snzi` coexists with `std::__8::snzi`. We design
+assuming this won't be needed.
+
+
+Initial benchmarks {#bench}
+==================
+
+Methodology {#bench-method}
+-----------
+
+Implementation: header-only template instantiation; no out-of-line
+symbols. Built with GCC 15.2 against libstdc++ -std=c++26.
+Benchmark harness: Google Benchmark v1.9.4. Workload: each iteration
+performs `s.arrive(); s.depart();` — a balanced pair so the indicator
+ends each iteration in a consistent state.
+
+Caveats: numbers below are from a 16-core/16-thread x86-64 development
+workstation with ASLR enabled and no CPU-governor pinning. They are
+*directionally* correct but should not be taken as paper-quality
+measurements.
+
+The benchmark progression planned for revision 1 and beyond:
+
+  * **Server-class x86-64** — a 2×28-core Xeon platform (56 physical
+    cores / 112 hardware threads). This is the realistic
+    contemporary-server datapoint, and the platform on which the
+    convenience type's tree-size default should be defended for
+    LWG/LEWG review.
+  * **Weakly-ordered architectures** — ARMv8 (Apple Silicon and
+    server-class Neoverse) and ideally POWER9 to characterize the
+    memory-ordering choices ([[#order]]) on hardware where the
+    differences between `release`, `acquire`, and `seq_cst` actually
+    cost cycles. We are exploring access to LLNL Sierra-class
+    hardware for the POWER9 datapoint.
+  * **Cross-architecture comparison** of the SNZI/atomic crossover
+    point — the central scalability claim should be demonstrated on
+    at least three architectures before the paper is ready for the
+    main library group.
+
+Comparison vs `atomic<long>` baseline {#bench-baseline}
+-------------------------------------
+
+The naive baseline — the "what you write if you don't have SNZI" —
+is `atomic<long>::fetch_add` / `fetch_sub`:
+
+<table>
+<tr><th>Threads</th><th>atomic&lt;long&gt;</th><th>std::snzi</th><th>SNZI / atomic</th></tr>
+<tr><td>1</td><td>8 ns</td><td>75 ns</td><td>9.5× slower</td></tr>
+<tr><td>4</td><td>54 ns</td><td>292 ns</td><td>5.4× slower</td></tr>
+<tr><td>8</td><td>116 ns</td><td>269 ns</td><td>2.3× slower</td></tr>
+<tr><td>16</td><td>310 ns</td><td>250 ns</td><td>**0.81× — SNZI wins**</td></tr>
+<tr><td>32</td><td>324 ns</td><td>245 ns</td><td>**0.76× — SNZI wins**</td></tr>
+</table>
+
+The crossover at 16 threads is the central scalability story. On
+larger machines we expect the crossover to remain in the same
+neighborhood (it is governed by atomic-counter contention, which
+saturates at relatively low thread counts) but the SNZI-side
+advantage past the knee should deepen as the tree's work-spreading
+benefit dominates.
+
+Tree-size sweep {#bench-treesize}
+---------------
+
+Same arrive/depart workload, varying the tree size at fixed thread
+counts. Drives the [[#abi]] default-lockdown decision.
+
+At 32 threads:
+
+<table>
+<tr><th>Tree size</th><th>ns/op</th><th>M ops/s</th></tr>
+<tr><td>4</td><td>655</td><td>3.1</td></tr>
+<tr><td>8</td><td>414</td><td>4.8</td></tr>
+<tr><td>16</td><td>224</td><td>**8.9 — knee**</td></tr>
+<tr><td>32</td><td>229</td><td>8.7 (plateau)</td></tr>
+<tr><td>64</td><td>223</td><td>9.0 (plateau)</td></tr>
+<tr><td>128</td><td>223</td><td>9.0 (plateau)</td></tr>
+</table>
+
+Tree size 16 is the knee on this machine. Tree size 32 sits well into
+the plateau and is the proposed default for the convenience type,
+pending validation on higher-core-count hardware.
+
+Query throughput {#bench-query}
+----------------
+
+Single-threaded query against a busy writer: 0.365 ns/op (~2.7 G
+ops/s) — essentially a single load-acquire. Exactly what the
+read-mostly use cases ([[#usecases]]) want.
+
+
+Integration with proposed `<rcu>` and `<hazptr>` {#integration}
+================================================
+
+These are in flight in libstdc++ at the time of writing. SNZI is a
+plausible substrate for both:
+
+  * **`<rcu>`** — readers register presence on entry to a critical
+    section, deregister on exit. Writers want to test "are any old
+    readers still active?" The natural use is one SNZI per epoch
+    generation (low-level tier, indicator co-located with the
+    generation word). SNZI replaces the per-thread quiescent-state
+    machinery for the simple case.
+  * **`<hazptr>`** — each hazard-pointer slot tracks an active hazard.
+    Reclamation needs to test "is this object hazard-protected by
+    anyone?" SNZI per protected object would be too expensive; SNZI
+    per hazard slot is the natural granularity.
+
+Issue: the precise integration story depends on what API the in-flight
+`<rcu>` and `<hazptr>` headers settle on. The Root concept's
+vocabulary should be chosen to compose with whatever those headers
+land on. This is an active discussion item.
+
+
+Open questions {#open}
+==============
+
+  1. **`arrive(0)` / `depart(0)`** — no-op or precondition violation?
+     We lean toward no-op (matches the intuition of "loop body that
+     happens to compute n=0 sometimes"), at the cost of one branch on
+     the fast path.
+  2. **`alignas(64)` vs `alignas(128)`** — the latter is more future-
+     proof for Apple Silicon and recent Intel but doubles memory
+     footprint. Pending data from those targets.
+  3. **Tree-size default** — 32 looks right for ≤32-thread machines;
+     pending data from ≥64-thread machines.
+  4. **Leaf-selection on freestanding** — `std::hash<thread::id>` is
+     hosted-only. We propose a pluggable leaf selector (template
+     parameter) on the low-level tier with a hosted-default selector;
+     freestanding callers parameterize as needed.
+  5. **`query` semantics under racing arrive/depart** — `query` is
+     specified to return the indicator's value at *some point* during
+     the call. Stronger guarantees (e.g. linearizability with respect
+     to all in-flight operations) are tempting but expensive. We lean
+     toward the weak guarantee.
+  6. **Wait-predicate strategy on C++20 baseline** — exact
+     implementation if [[P2643]] facilities are not yet available.
+     Acceptable to spin a small number of times before issuing
+     `atomic_wait` to filter version-bit churn?
+  7. **Bikeshed naming** — `snzi`, `nz_indicator`, or
+     `scalable_nz_indicator`? `arrive`/`depart` (matching
+     `latch`/`barrier` vocabulary) or `inc`/`dec`? Defer to LEWG
+     once the design is otherwise settled.
+  8. **Movability of the convenience type** — locked at non-movable
+     in this draft. Argument for revisiting if a use case emerges
+     where ownership transfer is genuinely safe (probably never).
+
+
+Proposed wording {#word}
+================
+
+Issue: Pending design lockdown. The wording will be developed against
+the API surface described in [[#api]] once SG1 is broadly aligned on
+the design choices.
+
+
+References {#ref}
+==========
+
+<pre class=biblio>
+{
+    "ELLM07": {
+        "authors": ["Faith Ellen", "Yossi Lev", "Victor Luchangco", "Mark Moir"],
+        "title": "SNZI: Scalable NonZero Indicators",
+        "publisher": "PODC '07: Proceedings of the twenty-sixth annual ACM symposium on Principles of distributed computing",
+        "date": "2007"
+    },
+    "P2300": {
+        "authors": ["Michał Dominiak", "Georgy Evtushenko", "Lewis Baker", "Lucian Radu Teodorescu", "Lee Howes", "Kirk Shoop", "Michael Garland", "Eric Niebler", "Bryce Adelstein Lelbach"],
+        "title": "std::execution",
+        "href": "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2300r10.html",
+        "date": "2024"
+    },
+    "P2643": {
+        "authors": ["Bronek Kozicki", "Lewis Baker", "Mateusz Pusz", "Thomas Rodgers"],
+        "title": "Improving C++ Concurrency Features",
+        "href": "https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2643r2.html",
+        "date": "2024"
+    }
+}
+</pre>
